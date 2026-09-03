@@ -1,0 +1,42 @@
+name: Privacy check
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  privacy-check:
+    name: Privacy check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out target repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: target
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Scan current tree
+        id: current-scan
+        continue-on-error: true
+        uses: 7wells/repo-privacy-check-public@199f708994292b5565eb978e35067d4ac8c3f1df # v0.3.2 runtime
+        with:
+          target-path: target
+          scan-mode: current
+
+      - name: Scan Git history
+        id: history-scan
+        if: always()
+        continue-on-error: true
+        uses: 7wells/repo-privacy-check-public@199f708994292b5565eb978e35067d4ac8c3f1df # v0.3.2 runtime
+        with:
+          target-path: target
+          scan-mode: history
+
+      - name: Fail if a privacy scan failed
+        if: always() && (steps.current-scan.outcome == 'failure' || steps.history-scan.outcome == 'failure')
+        run: exit 1

@@ -1,0 +1,17 @@
+name: Self check
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  privacy-check:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/privacy-check.yml
