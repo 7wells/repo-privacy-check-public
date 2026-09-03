@@ -1,0 +1,24 @@
+name: Repo Privacy Check
+description: "Reusable privacy and private-data check for repositories."
+
+inputs:
+  target-path:
+    description: "Path to the repository or directory to check."
+    required: false
+    default: "."
+  scan-mode:
+    description: "Scan mode: current for the working tree, history for all Git history."
+    required: false
+    default: "current"
+  include-ignored:
+    description: "Include generated, dependency, cache, and ignored-style directories."
+    required: false
+    default: "false"
+  report-path:
+    description: "Optional path for a minimal redacted JSON report. Do not upload it unless your workflow policy allows redacted artifacts."
+    required: false
+    default: ""
+
+runs:
+  using: node24
+  main: scripts/privacy-check.js
