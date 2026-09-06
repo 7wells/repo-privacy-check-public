@@ -4,7 +4,7 @@ Reusable GitHub Action and workflow for detecting accidentally committed private
 
 ## Use the action
 
-Pin the action to a reviewed commit or release. The action performs a current-tree scan by default:
+Pin the action to a reviewed release commit. Replace the placeholder below with the full commit SHA shown for that release. The action performs a current-tree scan by default:
 
 ```yaml
 name: Privacy check
@@ -24,7 +24,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: 7wells/repo-privacy-check-public@199f708994292b5565eb978e35067d4ac8c3f1df # v0.3.2
+      - uses: 7wells/repo-privacy-check-public@<FULL_RELEASE_COMMIT_SHA>
 ```
 
 The action inputs are:
@@ -43,7 +43,7 @@ This repository also provides `.github/workflows/privacy-check.yml` as a reusabl
 ```yaml
 jobs:
   privacy-check:
-    uses: 7wells/repo-privacy-check-public/.github/workflows/privacy-check.yml@199f708994292b5565eb978e35067d4ac8c3f1df # v0.3.2 workflow runtime
+    uses: 7wells/repo-privacy-check-public/.github/workflows/privacy-check.yml@<FULL_RELEASE_COMMIT_SHA>
 ```
 
 The workflow checks out the caller repository with full history, runs current and history scans, and requires read-only repository contents permission. It does not upload reports or artifacts.
