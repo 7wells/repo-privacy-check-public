@@ -4,6 +4,8 @@ updates:
     directory: "/"
     schedule:
       interval: weekly
+    ignore:
+      - dependency-name: "7wells/repo-privacy-check-public*"
 
   - package-ecosystem: npm
     directory: "/"
