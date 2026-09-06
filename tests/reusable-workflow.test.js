@@ -23,8 +23,12 @@ test("reusable workflow uses the reviewed v0.3.5 implementation for both active 
 
 test("reusable workflow runs history after a current failure and aggregates failures", () => {
   const workflow = fs.readFileSync(workflowPath, "utf8");
+  const currentScanStep = workflow
+    .split(/(?=^      - )/m)
+    .find((step) => /^\s*id:\s*current-scan\s*$/m.test(step));
 
-  assert.match(workflow, /id:\s*current-scan[\s\S]*?continue-on-error:\s*true/);
+  assert.ok(currentScanStep, "current-scan step is present");
+  assert.match(currentScanStep, /^\s*continue-on-error:\s*true\s*$/m);
   assert.match(workflow, /id:\s*history-scan[\s\S]*?if:\s*always\(\)[\s\S]*?continue-on-error:\s*true/);
   assert.match(
     workflow,
