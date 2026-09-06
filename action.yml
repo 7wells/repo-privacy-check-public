@@ -11,7 +11,7 @@ inputs:
     required: false
     default: "current"
   include-ignored:
-    description: "Include generated, dependency, cache, and ignored-style directories."
+    description: "Include generated, dependency, cache, and Git-ignored paths."
     required: false
     default: "false"
   report-path:

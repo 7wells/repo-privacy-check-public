@@ -130,6 +130,55 @@ test("can include ignored-style directories when explicitly requested", () => {
   assertRedacted(output, rawSecret);
 });
 
+test("skips untracked files excluded by Git ignore rules", () => {
+  const target = makeTempRepo();
+  const rawSecret = ["ghp", "abcdefghijklmnopqrstuvwxyzABCDEFGHIJ1234567890"].join("_");
+
+  execFileSync("git", ["init", "--quiet"], { cwd: target, stdio: "ignore" });
+  fs.writeFileSync(path.join(target, ".gitignore"), "private-cache/\n");
+  fs.mkdirSync(path.join(target, "private-cache"));
+  fs.writeFileSync(path.join(target, "private-cache", "ignored.txt"), rawSecret);
+
+  const result = runScanner([target]);
+  const output = combinedOutput(result);
+
+  assert.equal(result.status, 0);
+  assertRedacted(output, rawSecret);
+});
+
+test("scans untracked files not excluded by Git ignore rules", () => {
+  const target = makeTempRepo();
+  const rawSecret = ["ghp", "abcdefghijklmnopqrstuvwxyzABCDEFGHIJ1234567890"].join("_");
+
+  execFileSync("git", ["init", "--quiet"], { cwd: target, stdio: "ignore" });
+  fs.writeFileSync(path.join(target, "candidate.txt"), rawSecret);
+
+  const result = runScanner([target]);
+  const output = combinedOutput(result);
+
+  assert.equal(result.status, 1);
+  assert.match(output, /github-token candidate\.txt:1 category=token/);
+  assertRedacted(output, rawSecret);
+});
+
+test("scans tracked files even when a later Git rule ignores their path", () => {
+  const target = makeTempRepo();
+  const rawSecret = ["ghp", "abcdefghijklmnopqrstuvwxyzABCDEFGHIJ1234567890"].join("_");
+
+  execFileSync("git", ["init", "--quiet"], { cwd: target, stdio: "ignore" });
+  fs.mkdirSync(path.join(target, "tracked-cache"));
+  fs.writeFileSync(path.join(target, "tracked-cache", "tracked.txt"), rawSecret);
+  execFileSync("git", ["add", "--", "tracked-cache/tracked.txt"], { cwd: target, stdio: "ignore" });
+  fs.writeFileSync(path.join(target, ".gitignore"), "tracked-cache/\n");
+
+  const result = runScanner([target]);
+  const output = combinedOutput(result);
+
+  assert.equal(result.status, 1);
+  assert.match(output, /github-token tracked-cache\/tracked\.txt:1 category=token/);
+  assertRedacted(output, rawSecret);
+});
+
 test("maps GitHub Action inputs to CLI arguments without evaluating values", () => {
   const args = actionArgsFromEnvironment({
     "INPUT_INCLUDE-IGNORED": "true",
