@@ -1,5 +1,12 @@
 #!/usr/bin/env node
 
+// File purpose: Detect high-confidence privacy and secret risks in current trees and Git history.
+// Inputs: CLI arguments or GitHub Action inputs plus files and Git objects under the target path.
+// Outputs: Metadata-only console findings and an optional redacted JSON report.
+// Side effects: Writes a report only when an explicit report path is provided.
+// Security and privacy: Never expose matched values, snippets, environment values, or full local paths.
+// Maintenance invariants: Preserve separate current/history modes and keep output redaction test-covered.
+
 const fs = require("fs");
 const path = require("path");
 const { execFileSync } = require("child_process");
