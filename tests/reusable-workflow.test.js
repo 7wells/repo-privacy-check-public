@@ -9,9 +9,9 @@ const path = require("node:path");
 const { test } = require("node:test");
 
 const workflowPath = path.resolve(__dirname, "../.github/workflows/privacy-check.yml");
-const scannerSha = "b65a35428ba5391f1f9bf892946cbde72ddff0da";
+const scannerSha = "5f6554d0b214786da6898d7376d2f71bc1295467";
 
-test("reusable workflow uses the reviewed v0.3.4 implementation for both active scans", () => {
+test("reusable workflow uses the reviewed v0.3.5 implementation for both active scans", () => {
   const workflow = fs.readFileSync(workflowPath, "utf8");
   const activeScannerUses = [
     ...workflow.matchAll(/^\s*uses:\s+7wells\/repo-privacy-check-public@([0-9a-f]{40})\b/gm),
