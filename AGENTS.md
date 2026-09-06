@@ -48,7 +48,7 @@ Validate modified shell snippets or shell scripts with `bash -n`.
 
 - Keep repository documentation in English.
 - Document safe usage for beginners without exposing sensitive examples.
-- Consumer examples must use reviewed full public commit SHAs with adjacent version comments, not branch names or moving tags.
+- Consumer examples must use full public release-commit SHA placeholders, not branch names, stale concrete SHAs, or moving tags.
 - Explain that the reusable workflow performs both current-tree and full-history scans, while direct action use can still select `current` or `history` explicitly.
 - Explain which rule classes are intentionally current-tree-only versus history-relevant.
 
