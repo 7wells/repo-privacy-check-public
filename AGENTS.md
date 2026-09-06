@@ -25,6 +25,7 @@ This repository contains a GitHub Action that audits repositories for high-confi
 - The reusable workflow is the standard consumer entry point and should scan both the current tree and full reachable Git history.
 - Direct scanner invocations may use `current` for the working tree or `history` for committed Git history.
 - Current-tree scans run the complete rule set and skip local/generated artifacts such as dependency directories, virtual environments, caches, logs, and build outputs by default.
+- In Git repositories, current-tree scans must include tracked files and untracked non-ignored files, exclude untracked Git-ignored files by default, and never let a later ignore rule hide tracked content.
 - History scans enforce persistent privacy and private-data rules. Context-sensitive behavioral rules such as unsafe-logging checks are current-tree-only and must not force repository-history rewrites.
 - History traversal should avoid rescanning unchanged blob/path pairs across commits so full-history checks remain practical for repositories with substantial history.
 - Full-history scans are valid for deliberate audits and for this action repository's self-check workflow.

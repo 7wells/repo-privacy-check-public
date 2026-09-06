@@ -33,7 +33,7 @@ The action inputs are:
 | --- | --- | --- |
 | `target-path` | `.` | Repository or directory to scan |
 | `scan-mode` | `current` | Scan the current tree or all Git history (`history`) |
-| `include-ignored` | `false` | Include generated, dependency, cache, and ignored-style directories |
+| `include-ignored` | `false` | Include generated, dependency, cache, and Git-ignored paths |
 | `report-path` | empty | Write a minimal redacted JSON report; review it before publishing |
 
 ## Reusable workflow
@@ -64,6 +64,8 @@ The scanner focuses on high-confidence privacy and secret risks:
 - Committed log files.
 
 Unsafe-logging rules apply to executable and configuration content in the current tree. History scans retain rules for persistent secrets, credentials, private paths, and private URLs without forcing rewrites for obsolete behavioral patterns.
+
+In Git repositories, current mode scans tracked files plus untracked files that are not excluded by standard Git ignore rules. Tracked files remain in scope even when a later ignore rule matches their path. Non-Git directories retain the regular filesystem walk. Use `include-ignored` only for deliberate audits of local generated or ignored content.
 
 Findings contain only a rule ID, sanitized relative path, optional line number, category, and source mode. Matched content is never printed. JSON reports use the same redacted data, use mode `0600` where supported, and refuse existing symbolic-link targets.
 

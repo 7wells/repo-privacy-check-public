@@ -760,9 +760,38 @@ function readTextFile(filePath) {
   }
 }
 
+function listGitVisiblePaths(targetPath) {
+  try {
+    // Include tracked and prospective commit content while excluding files that Git explicitly ignores.
+    const output = git(
+      targetPath,
+      ["ls-files", "--cached", "--others", "--exclude-standard", "-z", "--"],
+      "buffer",
+    );
+    const files = new Set();
+    const directories = new Set();
+
+    for (const filePath of output.toString("utf8").split("\0").filter(Boolean)) {
+      const normalizedPath = normalizeGitPath(filePath);
+      const pathParts = normalizedPath.split("/");
+      files.add(normalizedPath);
+
+      for (let index = 1; index < pathParts.length; index += 1) {
+        directories.add(pathParts.slice(0, index).join("/"));
+      }
+    }
+
+    return { directories, files };
+  } catch {
+    // Non-Git directories retain the regular filesystem walk behavior.
+    return null;
+  }
+}
+
 function walkCurrentTree(targetPath, includeIgnored) {
   const findings = [];
   const trackedCodexDirectories = listTrackedCodexDirectories(targetPath);
+  const gitVisiblePaths = includeIgnored ? null : listGitVisiblePaths(targetPath);
 
   function walk(directoryPath) {
     let entries;
@@ -782,11 +811,20 @@ function walkCurrentTree(targetPath, includeIgnored) {
         continue;
       }
 
+      const normalizedRelativePath = normalizeGitPath(relativePath);
+      if (
+        gitVisiblePaths !== null &&
+        !gitVisiblePaths.files.has(normalizedRelativePath) &&
+        !gitVisiblePaths.directories.has(normalizedRelativePath)
+      ) {
+        continue;
+      }
+
       if (
         entry.isDirectory() &&
         entry.name === ".codex" &&
         trackedCodexDirectories !== null &&
-        !trackedCodexDirectories.has(normalizeGitPath(relativePath))
+        !trackedCodexDirectories.has(normalizedRelativePath)
       ) {
         continue;
       }
