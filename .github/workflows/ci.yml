@@ -1,3 +1,8 @@
+# File purpose: Validate the public Action implementation, tests, workflows, current tree, and Git history.
+# Outputs: A read-only required status suitable for protecting pull requests and main.
+# Security and privacy: Use no secrets; keep third-party actions pinned and downloaded tools checksum-verified.
+# Maintenance invariants: Test new scanner code locally through uses: ./ before publishing a release SHA.
+
 name: Self check
 
 on:
@@ -11,21 +16,23 @@ permissions:
   contents: read
 
 jobs:
-  privacy-check:
-    permissions:
-      contents: read
-    uses: ./.github/workflows/privacy-check.yml
-
-  actionlint:
-    name: Lint GitHub Actions workflows
+  self-check:
+    name: Test and privacy-check this action repository
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
 
       - name: Install actionlint
         shell: bash
@@ -36,5 +43,17 @@ jobs:
           tar --extract --gzip --file "$archive" --directory "$RUNNER_TEMP" actionlint
           echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
 
-      - name: Run actionlint
-        run: actionlint .github/workflows/*.yml
+      - name: Lint GitHub Actions workflows
+        run: bash scripts/lint-workflows.sh
+
+      - name: Run tests
+        run: npm test
+
+      - name: Scan current tree through the action entry point
+        uses: ./
+        with:
+          target-path: .
+          scan-mode: current
+
+      - name: Scan Git history
+        run: node scripts/privacy-check.js --mode history .

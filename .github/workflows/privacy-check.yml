@@ -1,3 +1,9 @@
+# File purpose: Scan a caller repository's current tree and complete reachable Git history.
+# Inputs: The caller repository checked out with full history.
+# Outputs: A failed job when either privacy scan reports findings or cannot complete safely.
+# Security and privacy: Use read-only permissions, retain no credentials, and emit metadata-only findings.
+# Maintenance invariants: Keep both scans independent and pin the reviewed public runtime to a full SHA.
+
 name: Privacy check
 
 on:

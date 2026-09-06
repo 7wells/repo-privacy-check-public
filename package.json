@@ -1,0 +1,11 @@
+{
+  "name": "repo-privacy-check-public",
+  "version": "0.3.4",
+  "private": true,
+  "description": "Reusable privacy and private-data check for repositories.",
+  "scripts": {
+    "privacy-check": "node scripts/privacy-check.js",
+    "test": "node --test"
+  },
+  "license": "MIT"
+}
