@@ -10,6 +10,7 @@
 const fs = require("fs");
 const path = require("path");
 const { execFileSync } = require("child_process");
+const { createHash } = require("crypto");
 
 // Skip generated and local-only directories by default to avoid noisy findings and reading local artifacts.
 const DEFAULT_IGNORED_DIRECTORIES = new Set([
@@ -64,6 +65,8 @@ const documentationFilePattern = /\.(?:adoc|asciidoc|md|mdx|rst|txt)$/i;
 const localGitIdentityPattern = /^\s*(?:name|email)\s*=\s*["']?(?!example|sample|template|placeholder|your[ _-]|github-actions(?:\[bot\])?|\$\{|$)\S/i;
 const MAX_TEXT_FILE_BYTES = 10 * 1024 * 1024;
 const BINARY_SAMPLE_BYTES = 8000;
+const MAX_HISTORY_ATTESTATION_BYTES = 64 * 1024;
+const MAX_HISTORY_ATTESTATIONS = 128;
 const GENERIC_HOME_USERS_FILE = path.resolve(__dirname, "../config/generic-home-users.txt");
 const MAX_GENERIC_HOME_USER_FILE_BYTES = 1024;
 const MAX_GENERIC_HOME_USER_ENTRIES = 16;
@@ -73,6 +76,7 @@ let genericHomeUserNamesCache = null;
 
 const placeholderValuePattern = /^(?:<|\$|example(?:\b|[ _-])|sample(?:\b|[ _-])|template(?:\b|[ _-])|placeholder(?:\b|[ _-])|changeme\b|your(?:\b|[ _-])|github-actions(?:\[bot\])?\b|false\b|true\b|null\b)/i;
 const sensitiveDevEnvKeyPattern = /(?:HOST|HOSTNAME|DOMAIN|IP|ADDRESS|USER|USERNAME|EMAIL|NAME|PATH|DIR|DIRECTORY|ROOT|HOME|URL|URI|ENDPOINT|TOKEN|SECRET|PASSWORD|PASSWD|KEY|CREDENTIAL)$/i;
+const genericWslProjectRootPattern = /^\/mnt\/[A-Za-z]\/src$/;
 const literalCredentialKeyPattern = /^(?:ACCESS_TOKEN|API_KEY|AUTH_TOKEN|AWS_SECRET_ACCESS_KEY|CLIENT_SECRET|CREDENTIALS?|DATABASE_URL|PASSWORD|PASSWD|PRIVATE_KEY|PRIVATE_TOKEN|REFRESH_TOKEN|SECRET|SECRET_KEY|TOKEN|[A-Z][A-Z0-9_]*(?:_ACCESS_TOKEN|_API_KEY|_AUTH_TOKEN|_CLIENT_SECRET|_PASSWORD|_PASSWD|_PRIVATE_KEY|_PRIVATE_TOKEN|_REFRESH_TOKEN|_SECRET|_SECRET_KEY|_TOKEN))$/;
 const indirectCredentialValuePattern = /^(?:\$|\{\{|<|example|sample|template|placeholder|changeme|your|process\.env|os\.environ|Deno\.env|import\.meta\.env|env\.|secrets?\.|config\.|vault\.)/i;
 
@@ -172,6 +176,9 @@ function matchesDevEnvLocalValue(line) {
     const key = match[1];
     const value = match[2];
     if (!value || placeholderValuePattern.test(value) || value.includes("$")) {
+      continue;
+    }
+    if (genericWslProjectRootPattern.test(value)) {
       continue;
     }
 
@@ -476,6 +483,7 @@ const sensitivePathRuleIds = new Set([
 
 function parseArgs(argv) {
   const options = {
+    historyAttestationsPath: null,
     includeIgnored: false,
     mode: "current",
     reportPath: null,
@@ -512,6 +520,17 @@ function parseArgs(argv) {
       continue;
     }
 
+    if (arg === "--history-attestations") {
+      options.historyAttestationsPath = argv[index + 1] || "";
+      index += 1;
+      continue;
+    }
+
+    if (arg.startsWith("--history-attestations=")) {
+      options.historyAttestationsPath = arg.slice("--history-attestations=".length);
+      continue;
+    }
+
     if (arg === "--help" || arg === "-h") {
       throw new HelpRequested();
     }
@@ -526,16 +545,22 @@ function parseArgs(argv) {
   if (!["current", "history"].includes(options.mode)) {
     failUsage("Mode must be 'current' or 'history'.");
   }
+  if (options.historyAttestationsPath && options.mode !== "history") {
+    failUsage("History attestations require history mode.");
+  }
 
   return {
     ...options,
+    historyAttestationsPath: options.historyAttestationsPath
+      ? path.resolve(options.historyAttestationsPath)
+      : null,
     targetPath: path.resolve(options.targetPath),
     reportPath: options.reportPath ? path.resolve(options.reportPath) : null,
   };
 }
 
 function printHelp() {
-  return "Usage: privacy-check [--mode current|history] [--include-ignored] [--report path] [target-path]";
+  return "Usage: privacy-check [--mode current|history] [--include-ignored] [--report path] [--history-attestations path] [target-path]";
 }
 
 function failUsage(message) {
@@ -942,7 +967,99 @@ function direntLike(filePath) {
   };
 }
 
-function scanHistory(targetPath, includeIgnored) {
+function createHistoryFindingId(ruleId, relativePath, lineNumber, lineContent) {
+  const digest = createHash("sha256");
+  digest.update("repo-privacy-history-finding-v1\0");
+  digest.update(ruleId);
+  digest.update("\0");
+  digest.update(relativePath);
+  digest.update("\0");
+  digest.update(String(lineNumber));
+  digest.update("\0");
+  digest.update(lineContent);
+  return `sha256:${digest.digest("hex")}`;
+}
+
+function historyAttestationKey(attestation) {
+  return [
+    attestation.commit,
+    attestation.blob,
+    attestation.path,
+    attestation.ruleId,
+    String(attestation.line),
+    attestation.findingId,
+  ].join("\0");
+}
+
+function hasExactObjectKeys(value, expectedKeys) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const actualKeys = Object.keys(value).sort();
+  return actualKeys.length === expectedKeys.length && actualKeys.every((key, index) => key === expectedKeys[index]);
+}
+
+function loadHistoryAttestations(attestationsPath) {
+  if (!attestationsPath || !fs.existsSync(attestationsPath)) {
+    return new Map();
+  }
+
+  const stat = fs.lstatSync(attestationsPath);
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.size === 0 || stat.size > MAX_HISTORY_ATTESTATION_BYTES) {
+    throw new Error("Invalid history attestation file.");
+  }
+
+  const document = JSON.parse(fs.readFileSync(attestationsPath, "utf8"));
+  if (!hasExactObjectKeys(document, ["attestations", "version"]) || document.version !== 1) {
+    throw new Error("Invalid history attestation document.");
+  }
+  if (
+    !Array.isArray(document.attestations) ||
+    document.attestations.length === 0 ||
+    document.attestations.length > MAX_HISTORY_ATTESTATIONS
+  ) {
+    throw new Error("Invalid history attestation entries.");
+  }
+
+  const expectedEntryKeys = ["blob", "commit", "findingId", "line", "path", "ruleId"];
+  const historyRuleIds = new Set(contentRules.filter((rule) => rule.history !== false).map((rule) => rule.ruleId));
+  const attestations = new Map();
+
+  for (const entry of document.attestations) {
+    const normalizedPath = typeof entry?.path === "string" ? normalizeGitPath(entry.path) : "";
+    const pathParts = normalizedPath.split("/");
+    const validPath =
+      normalizedPath === entry?.path &&
+      normalizedPath.length > 0 &&
+      normalizedPath.length <= 1024 &&
+      !path.posix.isAbsolute(normalizedPath) &&
+      !/[\u0000-\u001f\u007f*?\[\]{}]/.test(normalizedPath) &&
+      pathParts.every((part) => part && part !== "." && part !== "..");
+
+    if (
+      !hasExactObjectKeys(entry, expectedEntryKeys) ||
+      !/^[0-9a-f]{40}$/.test(entry.commit || "") ||
+      !/^[0-9a-f]{40}$/.test(entry.blob || "") ||
+      !validPath ||
+      !historyRuleIds.has(entry.ruleId) ||
+      !Number.isSafeInteger(entry.line) ||
+      entry.line < 1 ||
+      !/^sha256:[0-9a-f]{64}$/.test(entry.findingId || "")
+    ) {
+      throw new Error("Invalid history attestation entry.");
+    }
+
+    const key = historyAttestationKey(entry);
+    if (attestations.has(key)) {
+      throw new Error("Duplicate history attestation entry.");
+    }
+    attestations.set(key, { ...entry, used: false });
+  }
+
+  return attestations;
+}
+
+function scanHistory(targetPath, includeIgnored, attestations, attestationsPath) {
   const findings = [];
   const seenFindings = new Set();
   const seenPaths = new Set();
@@ -960,6 +1077,7 @@ function scanHistory(targetPath, includeIgnored) {
       }
 
       const beforeCount = findings.length;
+      let blobContent = null;
 
       if (!seenPaths.has(relativePath)) {
         seenPaths.add(relativePath);
@@ -972,6 +1090,7 @@ function scanHistory(targetPath, includeIgnored) {
           seenBlobPaths.add(blobPathKey);
           const result = readHistoryBlob(targetPath, entry.object);
           if (result.kind === "text") {
+            blobContent = result.content;
             checkContentRules(findings, relativePath, result.content, "history");
           } else if (result.kind === "error") {
             addFinding(findings, "unreadable-history-file", relativePath, null, "scan-error", "history");
@@ -984,13 +1103,48 @@ function scanHistory(targetPath, includeIgnored) {
       // History scans can see the same finding across many commits; report each location once.
       const newFindings = findings.splice(beforeCount);
       for (const finding of newFindings) {
-        const key = `${finding.ruleId}:${finding.file}:${finding.line || ""}`;
+        const key = `${finding.ruleId}:${relativePath}:${finding.line || ""}`;
         if (!seenFindings.has(key)) {
           seenFindings.add(key);
+          if (finding.line && blobContent !== null && entry.type === "blob") {
+            const lineContent = blobContent.split(/\r?\n/)[finding.line - 1] ?? "";
+            finding.commit = commit;
+            finding.blob = entry.object;
+            finding.findingId = createHistoryFindingId(
+              finding.ruleId,
+              relativePath,
+              finding.line,
+              lineContent,
+            );
+            const attestationKey = historyAttestationKey({
+              commit,
+              blob: entry.object,
+              path: relativePath,
+              ruleId: finding.ruleId,
+              line: finding.line,
+              findingId: finding.findingId,
+            });
+            const attestation = attestations.get(attestationKey);
+            if (attestation) {
+              attestation.used = true;
+              continue;
+            }
+          }
           findings.push(finding);
         }
       }
     }
+  }
+
+  if ([...attestations.values()].some((attestation) => !attestation.used)) {
+    addFinding(
+      findings,
+      "unused-history-attestation",
+      toDisplayPath(targetPath, attestationsPath),
+      null,
+      "scan-config",
+      "history",
+    );
   }
 
   return findings;
@@ -1024,7 +1178,10 @@ function printFindings(findings, writeError) {
   writeError("Privacy check failed. Findings:");
   for (const finding of findings) {
     const location = finding.line ? `${finding.file}:${finding.line}` : finding.file;
-    writeError(`- ${finding.ruleId} ${location} category=${finding.category}`);
+    const historyIdentity = finding.commit
+      ? ` commit=${finding.commit} blob=${finding.blob} finding=${finding.findingId}`
+      : "";
+    writeError(`- ${finding.ruleId} ${location} category=${finding.category}${historyIdentity}`);
   }
 }
 
@@ -1037,6 +1194,7 @@ function actionInput(environment, name, fallback = "") {
 function actionArgsFromEnvironment(environment) {
   const mode = actionInput(environment, "scan-mode", "current");
   const includeIgnored = actionInput(environment, "include-ignored", "false").toLowerCase();
+  const historyAttestationsPath = actionInput(environment, "history-attestations");
   const reportPath = actionInput(environment, "report-path");
   const targetPath = actionInput(environment, "target-path", ".");
   const args = ["--mode", mode];
@@ -1051,6 +1209,10 @@ function actionArgsFromEnvironment(environment) {
 
   if (reportPath) {
     args.push("--report", reportPath);
+  }
+
+  if (historyAttestationsPath) {
+    args.push("--history-attestations", historyAttestationsPath);
   }
 
   args.push(targetPath);
@@ -1089,9 +1251,16 @@ function runCli(argv, io = {}) {
       return 2;
     }
 
+    const attestations =
+      options.mode === "history" ? loadHistoryAttestations(options.historyAttestationsPath) : new Map();
     const findings =
       options.mode === "history"
-        ? scanHistory(options.targetPath, options.includeIgnored)
+        ? scanHistory(
+            options.targetPath,
+            options.includeIgnored,
+            attestations,
+            options.historyAttestationsPath,
+          )
         : walkCurrentTree(options.targetPath, options.includeIgnored);
 
     writeReport(options.reportPath, findings, options.mode);
