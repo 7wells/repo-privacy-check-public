@@ -34,6 +34,7 @@ The action inputs are:
 | `target-path` | `.` | Repository or directory to scan |
 | `scan-mode` | `current` | Scan the current tree or all Git history (`history`) |
 | `include-ignored` | `false` | Include generated, dependency, cache, and Git-ignored paths |
+| `history-attestations` | empty | Strict JSON attestations for exact reviewed historical findings; valid only with `history` |
 | `report-path` | empty | Write a minimal redacted JSON report; review it before publishing |
 
 ## Reusable workflow
@@ -48,6 +49,27 @@ jobs:
 
 The workflow checks out the caller repository with full history, runs current and history scans, and requires read-only repository contents permission. It does not upload reports or artifacts.
 
+## Exact history attestations
+
+History attestations are a narrow migration mechanism for a small number of
+reviewed, immutable historical findings that cannot be removed without rewriting
+history. They do not disable a rule or exempt a path. Each JSON entry must bind
+the exact commit, blob, repository-relative path, rule ID, line number, and the
+scanner-generated SHA-256 finding identifier. The identifier binds the matched
+line without storing or printing its content.
+
+The attestation document uses schema version `1` and an `attestations` array.
+Generate the candidate metadata from a redacted history report, independently
+review the referenced Git objects, and copy only the required metadata fields.
+Pass the reviewed file through `history-attestations` only for a history scan.
+
+Attestations fail closed when their schema is invalid, fields are missing or
+unknown, paths contain wildcard or traversal syntax, entries are duplicated, or
+an entry does not match a reported finding. An exact attestation suppresses only
+that one finding. Other findings in the same blob remain active, and identical
+content introduced by a different commit is reported again. Keep project-specific
+attestation documents in the consuming repository, not in this public scanner.
+
 ## Active rules
 
 The scanner focuses on high-confidence privacy and secret risks:
@@ -59,7 +81,9 @@ The scanner focuses on high-confidence privacy and secret risks:
 - Literal credential assignments, bearer credentials, and credential-bearing URLs.
 - Local credential files, Git identity values, and literal Git identity commands.
 - Home-directory paths, private-network URLs, and URLs with query strings.
-- Local-looking `DEV_ENV_*` assignments.
+- Local-looking `DEV_ENV_*` assignments. The exact generic WSL drive source
+  root `/mnt/<drive-letter>/src` is allowed, but paths below or merely prefixed
+  by that root remain findings.
 - Executable patterns that expose environments, credentials, sensitive files, diffs, or grep matches.
 - Committed log files.
 

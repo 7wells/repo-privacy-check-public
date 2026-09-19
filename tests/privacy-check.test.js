@@ -181,6 +181,7 @@ test("scans tracked files even when a later Git rule ignores their path", () => 
 
 test("maps GitHub Action inputs to CLI arguments without evaluating values", () => {
   const args = actionArgsFromEnvironment({
+    "INPUT_HISTORY-ATTESTATIONS": "history-attestations.json",
     "INPUT_INCLUDE-IGNORED": "true",
     "INPUT_REPORT-PATH": "privacy-report.json",
     "INPUT_SCAN-MODE": "history",
@@ -193,6 +194,8 @@ test("maps GitHub Action inputs to CLI arguments without evaluating values", () 
     "--include-ignored",
     "--report",
     "privacy-report.json",
+    "--history-attestations",
+    "history-attestations.json",
     "target directory",
   ]);
 });
@@ -827,6 +830,55 @@ test("allows DEV_ENV configuration plumbing and read-only Git identity queries",
 
   const result = runScanner([target]);
   assert.equal(result.status, 0);
+});
+
+test("allows only exact generic WSL source roots in DEV_ENV assignments", () => {
+  const target = makeTempRepo();
+  const lowerCaseDriveRoot = ["", "mnt", "c", "src"].join("/");
+  const upperCaseDriveRoot = ["", "mnt", "D", "src"].join("/");
+  const lines = [
+    ["DEV_ENV_PROJECT_COLLECTION_ROOT", lowerCaseDriveRoot].join("="),
+    ["DEV_ENV_PROJECT_COLLECTION_ROOT", `"${upperCaseDriveRoot}"`].join("="),
+  ];
+
+  fs.writeFileSync(path.join(target, "generic-wsl-roots.sh"), `${lines.join("\n")}\n`);
+
+  const result = runScanner([target]);
+  assert.equal(result.status, 0);
+});
+
+test("still blocks paths below or resembling WSL roots and other private DEV_ENV values", () => {
+  const target = makeTempRepo();
+  const deeperWslPath = ["", "mnt", "c", "src", "private-project"].join("/");
+  const prefixedWslPath = ["", "mnt", "c", "src-private"].join("/");
+  const linuxHomePath = ["", "home", "master", "private-project"].join("/");
+  const windowsHomePath = ["C:", "Users", "private-user", "private-project"].join("\\");
+  const privateHost = ["private", "workstation"].join("-");
+  const localCredential = ["local", "credential"].join("-");
+  const values = [deeperWslPath, prefixedWslPath, linuxHomePath, windowsHomePath, privateHost, localCredential];
+  const lines = [
+    ["DEV_ENV_PROJECT_COLLECTION_ROOT", deeperWslPath].join("="),
+    ["DEV_ENV_PROJECT_COLLECTION_ROOT", prefixedWslPath].join("="),
+    ["DEV_ENV_PROJECT_COLLECTION_ROOT", linuxHomePath].join("="),
+    ["DEV_ENV_PROJECT_COLLECTION_ROOT", windowsHomePath].join("="),
+    ["DEV_ENV_HOST", privateHost].join("="),
+    ["DEV_ENV_API_KEY", localCredential].join("="),
+  ];
+
+  fs.writeFileSync(path.join(target, "private-local-values.sh"), `${lines.join("\n")}\n`);
+
+  const result = runScanner([target]);
+  const output = combinedOutput(result);
+
+  assert.equal(result.status, 1);
+  for (let line = 1; line <= lines.length; line += 1) {
+    assert.match(output, new RegExp(`dev-env-local-value private-local-values\\.sh:${line} category=local-env`));
+  }
+  assert.match(output, /home-directory-path private-local-values\.sh:3 category=local-path/);
+  assert.match(output, /home-directory-path private-local-values\.sh:4 category=local-path/);
+  for (const value of values) {
+    assertRedacted(output, value);
+  }
 });
 
 test("still blocks literal DEV_ENV local values and Git identity setters", () => {

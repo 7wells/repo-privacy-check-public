@@ -14,6 +14,10 @@ inputs:
     description: "Include generated, dependency, cache, and Git-ignored paths."
     required: false
     default: "false"
+  history-attestations:
+    description: "Optional strict JSON attestations for exact reviewed historical findings; valid only in history mode."
+    required: false
+    default: ""
   report-path:
     description: "Optional path for a minimal redacted JSON report. Do not upload it unless your workflow policy allows redacted artifacts."
     required: false

@@ -53,6 +53,34 @@ function runScanner(args) {
   };
 }
 
+function collectHistoryFindings(target) {
+  const reportPath = path.join(target, ".git", "history-findings.json");
+  const result = runScanner(["--mode", "history", "--report", reportPath, target]);
+  const report = JSON.parse(fs.readFileSync(reportPath, "utf8"));
+  return { result, findings: report.findings };
+}
+
+function writeAttestations(target, attestations) {
+  const attestationsPath = path.join(target, ".git", "history-attestations.json");
+  fs.writeFileSync(
+    attestationsPath,
+    `${JSON.stringify({ version: 1, attestations }, null, 2)}\n`,
+    { mode: 0o600 },
+  );
+  return attestationsPath;
+}
+
+function toAttestation(finding, filePath) {
+  return {
+    commit: finding.commit,
+    blob: finding.blob,
+    path: filePath,
+    ruleId: finding.ruleId,
+    line: finding.line,
+    findingId: finding.findingId,
+  };
+}
+
 after(() => {
   for (const target of temporaryRepositories) {
     fs.rmSync(target, { recursive: true, force: true });
@@ -138,4 +166,103 @@ test("history scans the same blob separately when it appeared at different paths
   assert.match(result.output, /github-token first\.txt:1 category=token/);
   assert.match(result.output, /github-token second\.txt:1 category=token/);
   assert.equal(result.output.includes(token), false);
+});
+
+test("history attestations suppress only one exact finding and not another finding in the same blob", () => {
+  const target = makeTempRepo();
+  const localHost = ["private", "fixture-host"].join("-");
+  const token = ["ghp", "abcdefghijklmnopqrstuvwxyzABCDEFGHIJ1234567890"].join("_");
+  const filePath = "fixture.sh";
+
+  fs.writeFileSync(
+    path.join(target, filePath),
+    `${["DEV_ENV_HOST", localHost].join("=")}\n${token}\n`,
+  );
+  commitAll(target, "Add synthetic historical findings");
+
+  const { result: initialResult, findings } = collectHistoryFindings(target);
+  const localValueFinding = findings.find((finding) => finding.ruleId === "dev-env-local-value");
+  assert.equal(initialResult.status, 1);
+  assert.ok(localValueFinding?.commit);
+  assert.ok(localValueFinding?.blob);
+  assert.match(localValueFinding?.findingId ?? "", /^sha256:[0-9a-f]{64}$/);
+
+  const attestationsPath = writeAttestations(target, [toAttestation(localValueFinding, filePath)]);
+  const attestedResult = runScanner([
+    "--mode",
+    "history",
+    "--history-attestations",
+    attestationsPath,
+    target,
+  ]);
+
+  assert.equal(attestedResult.status, 1);
+  assert.doesNotMatch(attestedResult.output, /dev-env-local-value fixture\.sh:1/);
+  assert.match(attestedResult.output, /github-token fixture\.sh:2 category=token/);
+  assert.equal(attestedResult.output.includes(localHost), false);
+  assert.equal(attestedResult.output.includes(token), false);
+});
+
+test("an identical historical finding in a new commit does not inherit an older attestation", () => {
+  const target = makeTempRepo();
+  const localHost = ["private", "fixture-host"].join("-");
+  const filePath = "fixture.sh";
+  const content = `${["DEV_ENV_HOST", localHost].join("=")}\n`;
+
+  fs.writeFileSync(path.join(target, filePath), content);
+  commitAll(target, "Add original synthetic finding");
+  const { findings } = collectHistoryFindings(target);
+  const originalFinding = findings.find((finding) => finding.ruleId === "dev-env-local-value");
+  const attestationsPath = writeAttestations(target, [toAttestation(originalFinding, filePath)]);
+
+  fs.rmSync(path.join(target, filePath));
+  commitAll(target, "Remove synthetic finding");
+  fs.writeFileSync(path.join(target, filePath), content);
+  commitAll(target, "Reintroduce identical synthetic finding");
+
+  const result = runScanner([
+    "--mode",
+    "history",
+    "--history-attestations",
+    attestationsPath,
+    target,
+  ]);
+
+  assert.equal(result.status, 1);
+  assert.match(result.output, /dev-env-local-value fixture\.sh:1 category=local-env/);
+  assert.match(result.output, /unused-history-attestation/);
+  assert.equal(result.output.includes(localHost), false);
+});
+
+test("invalid, duplicate, and broad history attestations fail closed", () => {
+  const target = makeTempRepo();
+  const localHost = ["private", "fixture-host"].join("-");
+  const filePath = "fixture.sh";
+
+  fs.writeFileSync(path.join(target, filePath), `${["DEV_ENV_HOST", localHost].join("=")}\n`);
+  commitAll(target, "Add synthetic finding");
+  const { findings } = collectHistoryFindings(target);
+  const finding = findings.find((candidate) => candidate.ruleId === "dev-env-local-value");
+  const validAttestation = toAttestation(finding, filePath);
+  const invalidDocuments = [
+    { version: 1, attestations: [{ ...validAttestation, path: "fixtures/*.sh" }] },
+    { version: 1, attestations: [{ ...validAttestation, blob: undefined }] },
+    { version: 1, attestations: [{ ...validAttestation, unexpected: true }] },
+    { version: 1, attestations: [validAttestation, validAttestation] },
+  ];
+
+  for (const document of invalidDocuments) {
+    const attestationsPath = path.join(target, ".git", "invalid-attestations.json");
+    fs.writeFileSync(attestationsPath, `${JSON.stringify(document)}\n`, { mode: 0o600 });
+    const result = runScanner([
+      "--mode",
+      "history",
+      "--history-attestations",
+      attestationsPath,
+      target,
+    ]);
+    assert.equal(result.status, 2);
+    assert.match(result.output, /Privacy check could not complete safely\./);
+    assert.equal(result.output.includes(localHost), false);
+  }
 });
