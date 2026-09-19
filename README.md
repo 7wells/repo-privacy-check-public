@@ -48,6 +48,9 @@ jobs:
 ```
 
 The workflow checks out the caller repository with full history, runs current and history scans, and requires read-only repository contents permission. It does not upload reports or artifacts.
+When present, the reusable workflow passes the caller's
+`.privacy-history-attestations.json` file only to the history scan. Repositories
+without that file receive the same full scan with no attestations.
 
 ## Exact history attestations
 
