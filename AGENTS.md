@@ -16,19 +16,19 @@ This repository contains a GitHub Action that audits repositories for high-confi
 - Do not use `pull_request_target` for untrusted code.
 - Do not require repository or organization secrets.
 - Pin third-party and GitHub Actions to full commit SHAs in workflow files.
-- Reusable consumer workflows should check out full Git history with `fetch-depth: 0` and scan both the current tree and all reachable Git history.
+- Reusable consumer workflows should check out full Git history with `fetch-depth: 0` and scan both the current tree and all commits reachable from the checked-out `HEAD`.
 - Keep `current` and `history` as separate scanner modes so each remains independently usable for local diagnostics and deliberate audits.
 - If the current-tree scan fails, the reusable workflow must still run the history scan while preserving an overall failed job status.
 
 ## Scanner Behavior
 
-- The reusable workflow is the standard consumer entry point and should scan both the current tree and full reachable Git history.
+- The reusable workflow is the standard consumer entry point and should scan both the current tree and the complete ancestor history reachable from the checked-out `HEAD`.
 - Direct scanner invocations may use `current` for the working tree or `history` for committed Git history.
 - Current-tree scans run the complete rule set and skip local/generated artifacts such as dependency directories, virtual environments, caches, logs, and build outputs by default.
 - In Git repositories, current-tree scans must include tracked files and untracked non-ignored files, exclude untracked Git-ignored files by default, and never let a later ignore rule hide tracked content.
 - History scans enforce persistent privacy and private-data rules. Context-sensitive behavioral rules such as unsafe-logging checks are current-tree-only and must not force repository-history rewrites.
 - History traversal should avoid rescanning unchanged blob/path pairs across commits so full-history checks remain practical for repositories with substantial history.
-- Full-history scans are valid for deliberate audits and for this action repository's self-check workflow.
+- Full `HEAD`-history scans are valid for deliberate audits and for this action repository's self-check workflow; unrelated refs are outside a single invocation's scope.
 - Prefer high-confidence rules over broad speculative matches.
 - Keep rule additions generic and reusable across private and public repositories.
 
@@ -50,7 +50,7 @@ Validate modified shell snippets or shell scripts with `bash -n`.
 - Keep repository documentation in English.
 - Document safe usage for beginners without exposing sensitive examples.
 - Consumer examples must use full public release-commit SHA placeholders, not branch names, stale concrete SHAs, or moving tags.
-- Explain that the reusable workflow performs both current-tree and full-history scans, while direct action use can still select `current` or `history` explicitly.
+- Explain that the reusable workflow performs both current-tree and full `HEAD`-history scans, while direct action use can still select `current` or `history` explicitly.
 - Explain which rule classes are intentionally current-tree-only versus history-relevant.
 
 ## File Headers

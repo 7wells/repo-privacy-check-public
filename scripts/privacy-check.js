@@ -917,7 +917,7 @@ function listTrackedCodexDirectories(targetPath) {
 
 function listHistoryCommits(targetPath) {
   try {
-    return git(targetPath, ["rev-list", "--all"]).trim().split(/\r?\n/).filter(Boolean);
+    return git(targetPath, ["rev-list", "HEAD"]).trim().split(/\r?\n/).filter(Boolean);
   } catch {
     failUsage("History mode requires a readable Git repository.");
   }

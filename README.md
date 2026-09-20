@@ -32,7 +32,7 @@ The action inputs are:
 | Input | Default | Purpose |
 | --- | --- | --- |
 | `target-path` | `.` | Repository or directory to scan |
-| `scan-mode` | `current` | Scan the current tree or all Git history (`history`) |
+| `scan-mode` | `current` | Scan the current tree or all commits reachable from the checked-out `HEAD` (`history`) |
 | `include-ignored` | `false` | Include generated, dependency, cache, and Git-ignored paths |
 | `history-attestations` | empty | Strict JSON attestations for exact reviewed historical findings; valid only with `history` |
 | `report-path` | empty | Write a minimal redacted JSON report; review it before publishing |
@@ -47,7 +47,7 @@ jobs:
     uses: 7wells/repo-privacy-check-public/.github/workflows/privacy-check.yml@<FULL_RELEASE_COMMIT_SHA>
 ```
 
-The workflow checks out the caller repository with full history, runs current and history scans, and requires read-only repository contents permission. It does not upload reports or artifacts.
+The workflow checks out the caller repository with full history, runs current and history scans, and requires read-only repository contents permission. History mode scans the complete ancestor history reachable from the checked-out `HEAD`; unrelated local branches and other refs are outside that invocation's scope. The workflow does not upload reports or artifacts.
 When present, the reusable workflow passes the caller's
 `.privacy-history-attestations.json` file only to the history scan. Repositories
 without that file receive the same full scan with no attestations.
@@ -108,7 +108,7 @@ npm run privacy-check
 node scripts/privacy-check.js --mode history .
 ```
 
-The self-check runs on pushes to `main`, pull requests, and manual dispatch. It installs actionlint v1.7.12 from the official release archive, verifies its SHA-256, runs the regression suite, exercises the current Action through `uses: ./`, and scans reachable Git history. Dependabot monitors GitHub Actions and npm metadata weekly.
+The self-check runs on pushes to `main`, pull requests, and manual dispatch. It installs actionlint v1.7.12 from the official release archive, verifies its SHA-256, runs the regression suite, exercises the current Action through `uses: ./`, and scans the history reachable from the checked-out `HEAD`. Dependabot monitors GitHub Actions and npm metadata weekly.
 
 ## Release and rollout
 
