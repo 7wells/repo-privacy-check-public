@@ -7,7 +7,7 @@ inputs:
     required: false
     default: "."
   scan-mode:
-    description: "Scan mode: current for the working tree, history for all Git history."
+    description: "Scan mode: current for the working tree, history for commits reachable from the checked-out HEAD."
     required: false
     default: "current"
   include-ignored:

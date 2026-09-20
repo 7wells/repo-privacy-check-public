@@ -87,7 +87,7 @@ after(() => {
   }
 });
 
-test("history detects privacy data that was committed and later removed", () => {
+test("history detects privacy data in an ancestor of HEAD after it is removed", () => {
   const target = makeTempRepo();
   const token = ["ghp", "abcdefghijklmnopqrstuvwxyzABCDEFGHIJ1234567890"].join("_");
 
@@ -101,6 +101,35 @@ test("history detects privacy data that was committed and later removed", () => 
   assert.equal(result.status, 1);
   assert.match(result.output, /github-token temporary\.txt:1 category=token/);
   assert.equal(result.output.includes(token), false);
+});
+
+test("history ignores privacy findings reachable only from an unrelated branch", () => {
+  const target = makeTempRepo();
+  const localPath = ["", "home", "private-user", "unrelated-branch"].join("/");
+
+  fs.writeFileSync(path.join(target, "README.md"), "Clean checked-out history.\n");
+  commitAll(target, "Add clean base");
+  const checkedOutBranch = execFileSync("git", ["branch", "--show-current"], {
+    cwd: target,
+    encoding: "utf8",
+  }).trim();
+
+  execFileSync("git", ["switch", "--quiet", "--create", "unrelated-finding"], {
+    cwd: target,
+    stdio: "ignore",
+  });
+  fs.writeFileSync(path.join(target, "unrelated.txt"), `Path: ${localPath}\n`);
+  commitAll(target, "Add unrelated privacy fixture");
+  execFileSync("git", ["switch", "--quiet", checkedOutBranch], {
+    cwd: target,
+    stdio: "ignore",
+  });
+
+  const result = runScanner(["--mode", "history", target]);
+
+  assert.equal(result.status, 0);
+  assert.doesNotMatch(result.output, /home-directory-path/);
+  assert.equal(result.output.includes(localPath), false);
 });
 
 test("history keeps local path findings after the current tree is cleaned", () => {
