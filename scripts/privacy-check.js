@@ -71,7 +71,7 @@ const GENERIC_HOME_USERS_FILE = path.resolve(__dirname, "../config/generic-home-
 const MAX_GENERIC_HOME_USER_FILE_BYTES = 1024;
 const MAX_GENERIC_HOME_USER_ENTRIES = 16;
 const genericHomeUserNamePattern = /^[a-z][a-z0-9_-]{0,31}$/;
-const sensitiveUrlQueryKeyPattern = /^(?:access[_-]?token|address|api[_-]?key|auth(?:entication|orization)?|bearer|client[_-]?secret|credentials?|domain|email|host(?:name)?|ip|key|latitude|location|longitude|password|passwd|phone|private|private[_-]?key|secret|token|user(?:name)?)$/i;
+const sensitiveUrlQueryKeyPattern = /^(?:access[_-]?token|address|api[_-]?key|auth(?:entication|orization)?|bearer|client[_-]?secret|credentials?|domain|email|host(?:name)?|ip|key|lat|latitude|location|lon|longitude|password|passwd|phone|private|private[_-]?key|secret|token|user(?:name)?)$/i;
 let genericHomeUserNamesCache = null;
 
 const placeholderValuePattern = /^(?:<|\$|example(?:\b|[ _-])|sample(?:\b|[ _-])|template(?:\b|[ _-])|placeholder(?:\b|[ _-])|changeme\b|your(?:\b|[ _-])|github-actions(?:\[bot\])?\b|false\b|true\b|null\b)/i;
@@ -397,6 +397,30 @@ function matchesPrivateNetworkUrl(line) {
   return false;
 }
 
+function isIndirectUrlCredentialValue(value) {
+  let decodedValue = value;
+  try {
+    decodedValue = decodeURIComponent(value);
+  } catch {
+    // Keep inspecting malformed percent-encoding as a literal value.
+  }
+  return placeholderValuePattern.test(decodedValue) || indirectCredentialValuePattern.test(decodedValue);
+}
+
+function matchesCredentialUrl(line) {
+  const urlPattern = /\b(?:https?|postgresql):\/\/([^\s:@/"'<>`]+):([^\s@/"'<>`]+)@[^\s/"'<>`]+/gi;
+
+  for (const match of line.matchAll(urlPattern)) {
+    // Only fully indirect userinfo is exempt; one literal component keeps the finding.
+    if (isIndirectUrlCredentialValue(match[1]) && isIndirectUrlCredentialValue(match[2])) {
+      continue;
+    }
+    return true;
+  }
+
+  return false;
+}
+
 function matchesSensitiveUrlQuery(line) {
   const urlPattern = /\bhttps?:\/\/[^\s"'<>`]+/gi;
 
@@ -409,6 +433,10 @@ function matchesSensitiveUrlQuery(line) {
         }
 
         const trimmedValue = value.trim();
+        // The value all is a public selector, not a personal user identifier.
+        if (key.toLowerCase() === "user" && trimmedValue.toLowerCase() === "all") {
+          continue;
+        }
         const isIndirectValue =
           !trimmedValue ||
           placeholderValuePattern.test(trimmedValue) ||
@@ -489,7 +517,7 @@ const contentRules = [
   {
     ruleId: "credential-url",
     category: "credential",
-    pattern: /\bhttps?:\/\/[^\s:@/"']+:[^\s@/"']+@[^\s/"']+/,
+    matches: matchesCredentialUrl,
   },
   {
     ruleId: "authorization-bearer-value",

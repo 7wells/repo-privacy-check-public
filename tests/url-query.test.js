@@ -59,6 +59,38 @@ function sensitivePlaceholderUrl() {
   return ["https://example.invalid/callback?", "token=", "$", "{TOKEN}"].join("");
 }
 
+function credentialUrl(scheme, username, password, resource = "/") {
+  return [scheme, "://", username, ":", password, "@example.org", resource].join("");
+}
+
+function queryUrl(...parameters) {
+  return ["https://example.org/resource?", parameters.join("&")].join("");
+}
+
+function scanUrlFixture(url, mode) {
+  const target = makeTempRepo();
+  const content = `${url}\n`;
+  if (mode === "history") {
+    commitReadme(target, content, "Add one synthetic URL fixture");
+  } else {
+    fs.writeFileSync(path.join(target, "README.md"), content);
+  }
+  return runScanner(["--mode", mode, target]);
+}
+
+function assertUrlFinding(url, mode, ruleId) {
+  const result = scanUrlFixture(url, mode);
+  assert.equal(result.status, 1, result.output);
+  assert.match(result.output, new RegExp(`${ruleId} README\\.md:1 category=`));
+  assert.equal(result.output.includes(url), false);
+}
+
+function assertUrlAllowed(url, mode, ruleId) {
+  const result = scanUrlFixture(url, mode);
+  assert.equal(result.status, 0, result.output);
+  assert.doesNotMatch(result.output, new RegExp(ruleId));
+}
+
 after(() => {
   for (const target of temporaryRepositories) {
     fs.rmSync(target, { recursive: true, force: true });
@@ -87,6 +119,91 @@ test("detects literal sensitive and personal query values", () => {
   const personalUrl = ["https://example.invalid/profile?", "user", "name=", "local-person"].join("");
   assert.equal(matchesSensitiveUrlQuery(personalUrl), true);
 });
+
+const credentialUrlFindings = [
+  {
+    name: "literal HTTP credentials",
+    url: credentialUrl("https", ["synthetic", "user"].join("-"), ["synthetic", "pass"].join("-")),
+  },
+  {
+    name: "literal PostgreSQL credentials",
+    url: credentialUrl("postgresql", ["synthetic", "user"].join("-"), ["synthetic", "pass"].join("-"), "/database"),
+  },
+  {
+    name: "a literal username and dynamic password",
+    url: credentialUrl("https", ["synthetic", "user"].join("-"), ["$", "PASSWORD"].join("")),
+  },
+  {
+    name: "a dynamic username and literal password",
+    url: credentialUrl("https", ["$", "{USER}"].join(""), ["synthetic", "pass"].join("-")),
+  },
+];
+
+for (const mode of ["current", "history"]) {
+  for (const { name, url } of credentialUrlFindings) {
+    test(`${mode} scan reports ${name} as credential-url`, () => {
+      assertUrlFinding(url, mode, "credential-url");
+    });
+  }
+}
+
+const credentialUrlAllowances = [
+  {
+    name: "fully dynamic $VAR userinfo",
+    url: credentialUrl("https", ["$", "USER"].join(""), ["$", "PASSWORD"].join("")),
+  },
+  {
+    name: "fully dynamic braced userinfo",
+    url: credentialUrl("https", ["$", "{USER}"].join(""), ["$", "{PASSWORD}"].join("")),
+  },
+  {
+    name: "generic example and placeholder userinfo",
+    url: credentialUrl("https", ["example", "-user"].join(""), ["placeholder", "-password"].join("")),
+  },
+  { name: "a URL without userinfo", url: ["https://", "example.org/resource"].join("") },
+  { name: "userinfo without a password", url: ["https://", "synthetic-user", "@example.org/"].join("") },
+];
+
+for (const mode of ["current", "history"]) {
+  for (const { name, url } of credentialUrlAllowances) {
+    test(`${mode} scan allows ${name} without credential-url`, () => {
+      assertUrlAllowed(url, mode, "credential-url");
+    });
+  }
+}
+
+const sensitiveQueryFindings = [
+  { name: "lat", url: queryUrl("lat=12.3456") },
+  { name: "lon", url: queryUrl("lon=-45.6789") },
+  { name: "latitude", url: queryUrl("latitude=12.3456") },
+  { name: "longitude", url: queryUrl("longitude=-45.6789") },
+  { name: "a personal user value", url: queryUrl(["user=", "local-person"].join("")) },
+  { name: "a personal username value", url: queryUrl(["username=", "local-person"].join("")) },
+];
+
+for (const mode of ["current", "history"]) {
+  for (const { name, url } of sensitiveQueryFindings) {
+    test(`${mode} scan reports ${name} as url-with-query`, () => {
+      assertUrlFinding(url, mode, "url-with-query");
+    });
+  }
+}
+
+const sensitiveQueryAllowances = [
+  { name: "the public user value all", url: queryUrl("user=all") },
+  { name: "a dynamic lat value", url: queryUrl(["lat=", "$", "{LAT}"].join("")) },
+  { name: "a dynamic lon value", url: queryUrl(["lon=", "$", "LON"].join("")) },
+  { name: "a placeholder lat value", url: queryUrl("lat=placeholder") },
+  { name: "an example lon value", url: queryUrl("lon=example-coordinate") },
+];
+
+for (const mode of ["current", "history"]) {
+  for (const { name, url } of sensitiveQueryAllowances) {
+    test(`${mode} scan allows ${name} without url-with-query`, () => {
+      assertUrlAllowed(url, mode, "url-with-query");
+    });
+  }
+}
 
 test("history scan allows deleted ordinary public query URLs", () => {
   const target = makeTempRepo();
