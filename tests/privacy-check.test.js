@@ -832,6 +832,45 @@ test("allows DEV_ENV configuration plumbing and read-only Git identity queries",
   assert.equal(result.status, 0);
 });
 
+test("allows only the exact public expected Git identity defaults", () => {
+  const target = makeTempRepo();
+  const lines = [
+    'readonly DEV_ENV_EXPECTED_GIT_USER_NAME="7wells"',
+    'readonly DEV_ENV_EXPECTED_GIT_USER_EMAIL="65889763+7wells@users.noreply.github.com"',
+  ];
+
+  fs.writeFileSync(path.join(target, "expected-identity.sh"), `${lines.join("\n")}\n`);
+
+  const result = runScanner([target]);
+  assert.equal(result.status, 0);
+});
+
+test("still detects changed or similar DEV_ENV identity values", () => {
+  const target = makeTempRepo();
+  const localName = "private-workstation";
+  const localEmail = "person@example.invalid";
+  const lines = [
+    `DEV_ENV_EXPECTED_GIT_USER_NAME=${localName}`,
+    `DEV_ENV_EXPECTED_GIT_USER_EMAIL=${localEmail}`,
+    ["DEV_ENV_GIT_USER_NAME", "7wells"].join("="),
+    ["DEV_ENV_GIT_USER_EMAIL", "65889763+7wells@users.noreply.github.com"].join("="),
+    `DEV_ENV_USER_NAME=${localName}`,
+    `DEV_ENV_USER_EMAIL=${localEmail}`,
+  ];
+
+  fs.writeFileSync(path.join(target, "local-identities.sh"), `${lines.join("\n")}\n`);
+
+  const result = runScanner([target]);
+  const output = combinedOutput(result);
+
+  assert.equal(result.status, 1);
+  for (let line = 1; line <= lines.length; line += 1) {
+    assert.match(output, new RegExp(`dev-env-local-value local-identities\\.sh:${line} category=local-env`));
+  }
+  assertRedacted(output, localName);
+  assertRedacted(output, localEmail);
+});
+
 test("allows only exact generic WSL source roots in DEV_ENV assignments", () => {
   const target = makeTempRepo();
   const lowerCaseDriveRoot = ["", "mnt", "c", "src"].join("/");

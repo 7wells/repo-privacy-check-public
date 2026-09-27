@@ -76,6 +76,11 @@ let genericHomeUserNamesCache = null;
 
 const placeholderValuePattern = /^(?:<|\$|example(?:\b|[ _-])|sample(?:\b|[ _-])|template(?:\b|[ _-])|placeholder(?:\b|[ _-])|changeme\b|your(?:\b|[ _-])|github-actions(?:\[bot\])?\b|false\b|true\b|null\b)/i;
 const sensitiveDevEnvKeyPattern = /(?:HOST|HOSTNAME|DOMAIN|IP|ADDRESS|USER|USERNAME|EMAIL|NAME|PATH|DIR|DIRECTORY|ROOT|HOME|URL|URI|ENDPOINT|TOKEN|SECRET|PASSWORD|PASSWD|KEY|CREDENTIAL)$/i;
+// Exempt only the exact public repository defaults; changed values stay subject to local-value checks.
+const reviewedPublicDevEnvIdentityDefaults = Object.freeze({
+  DEV_ENV_EXPECTED_GIT_USER_NAME: "7wells",
+  DEV_ENV_EXPECTED_GIT_USER_EMAIL: "65889763+7wells@users.noreply.github.com",
+});
 const genericWslProjectRootPattern = /^\/mnt\/[A-Za-z]\/src$/;
 const literalCredentialKeyPattern = /^(?:ACCESS_TOKEN|API_KEY|AUTH_TOKEN|AWS_SECRET_ACCESS_KEY|CLIENT_SECRET|CREDENTIALS?|DATABASE_URL|PASSWORD|PASSWD|PRIVATE_KEY|PRIVATE_TOKEN|REFRESH_TOKEN|SECRET|SECRET_KEY|TOKEN|[A-Z][A-Z0-9_]*(?:_ACCESS_TOKEN|_API_KEY|_AUTH_TOKEN|_CLIENT_SECRET|_PASSWORD|_PASSWD|_PRIVATE_KEY|_PRIVATE_TOKEN|_REFRESH_TOKEN|_SECRET|_SECRET_KEY|_TOKEN))$/;
 const indirectCredentialValuePattern = /^(?:\$|\{\{|<|example|sample|template|placeholder|changeme|your|process\.env|os\.environ|Deno\.env|import\.meta\.env|env\.|secrets?\.|config\.|vault\.)/i;
@@ -175,6 +180,9 @@ function matchesDevEnvLocalValue(line) {
 
     const key = match[1];
     const value = match[2];
+    if (Object.hasOwn(reviewedPublicDevEnvIdentityDefaults, key) && reviewedPublicDevEnvIdentityDefaults[key] === value) {
+      continue;
+    }
     if (!value || placeholderValuePattern.test(value) || value.includes("$")) {
       continue;
     }

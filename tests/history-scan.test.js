@@ -132,6 +132,20 @@ test("history ignores privacy findings reachable only from an unrelated branch",
   assert.equal(result.output.includes(localPath), false);
 });
 
+test("history allows the exact public expected Git identity defaults", () => {
+  const target = makeTempRepo();
+  const expectedIdentity = [
+    'readonly DEV_ENV_EXPECTED_GIT_USER_NAME="7wells"',
+    'readonly DEV_ENV_EXPECTED_GIT_USER_EMAIL="65889763+7wells@users.noreply.github.com"',
+  ];
+
+  fs.writeFileSync(path.join(target, "expected-identity.sh"), `${expectedIdentity.join("\n")}\n`);
+  commitAll(target, "Add public expected Git identity defaults");
+
+  const result = runScanner(["--mode", "history", target]);
+  assert.equal(result.status, 0);
+});
+
 test("history keeps local path findings after the current tree is cleaned", () => {
   const target = makeTempRepo();
   const localPath = ["", "home", "private-user", "project"].join("/");
