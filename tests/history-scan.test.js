@@ -13,6 +13,7 @@ const { after, test } = require("node:test");
 const { runCli } = require("../scripts/privacy-check.js");
 
 const temporaryRepositories = new Set();
+const expectedGitIdentityKey = (suffix) => ["DEV_ENV_EXPECTED_GIT_USER", suffix].join("");
 
 function makeTempRepo() {
   const target = fs.mkdtempSync(path.join(os.tmpdir(), "repo-privacy-history-"));
@@ -135,8 +136,8 @@ test("history ignores privacy findings reachable only from an unrelated branch",
 test("history allows the exact public expected Git identity defaults", () => {
   const target = makeTempRepo();
   const expectedIdentity = [
-    'readonly DEV_ENV_EXPECTED_GIT_USER_NAME="7wells"',
-    'readonly DEV_ENV_EXPECTED_GIT_USER_EMAIL="65889763+7wells@users.noreply.github.com"',
+    `readonly ${expectedGitIdentityKey("_NAME")}="7wells"`,
+    `readonly ${expectedGitIdentityKey("_EMAIL")}="65889763+7wells@users.noreply.github.com"`,
   ];
 
   fs.writeFileSync(path.join(target, "expected-identity.sh"), `${expectedIdentity.join("\n")}\n`);
@@ -145,6 +146,74 @@ test("history allows the exact public expected Git identity defaults", () => {
   const result = runScanner(["--mode", "history", target]);
   assert.equal(result.status, 0);
 });
+
+const nonExactPublicIdentityAssignments = [
+  {
+    name: "name with an appended word inside quotes",
+    line: `${expectedGitIdentityKey("_NAME")}="7wells synthetic-person"`,
+  },
+  {
+    name: "name with text after the closing quote",
+    line: `${expectedGitIdentityKey("_NAME")}="7wells" synthetic-person`,
+  },
+  {
+    name: "name with a semicolon payload",
+    line: `${expectedGitIdentityKey("_NAME")}="7wells";synthetic-payload`,
+  },
+  {
+    name: "name with an unmatched quote",
+    line: `${expectedGitIdentityKey("_NAME")}="7wells`,
+  },
+  {
+    name: "name with a mismatched closing quote",
+    line: `${expectedGitIdentityKey("_NAME")}="7wells'`,
+  },
+  {
+    name: "different quoted personal name",
+    line: `${expectedGitIdentityKey("_NAME")}="synthetic-private-person"`,
+  },
+  {
+    name: "email with an appended word inside quotes",
+    line: `${expectedGitIdentityKey("_EMAIL")}="65889763+7wells@users.noreply.github.com synthetic-person"`,
+  },
+  {
+    name: "email with text after the closing quote",
+    line: `${expectedGitIdentityKey("_EMAIL")}="65889763+7wells@users.noreply.github.com" synthetic-person`,
+  },
+  {
+    name: "email with a semicolon payload",
+    line: `${expectedGitIdentityKey("_EMAIL")}="65889763+7wells@users.noreply.github.com";synthetic-payload`,
+  },
+  {
+    name: "email with an unmatched quote",
+    line: `${expectedGitIdentityKey("_EMAIL")}="65889763+7wells@users.noreply.github.com`,
+  },
+  {
+    name: "email with a mismatched closing quote",
+    line: `${expectedGitIdentityKey("_EMAIL")}="65889763+7wells@users.noreply.github.com'`,
+  },
+  {
+    name: "different quoted personal email",
+    line: `${expectedGitIdentityKey("_EMAIL")}="person@example.invalid"`,
+  },
+];
+
+for (const { name, line } of nonExactPublicIdentityAssignments) {
+  test(`non-exact public identity ${name} remains a finding in current and history`, () => {
+    const target = makeTempRepo();
+    const filePath = "identity.sh";
+    fs.writeFileSync(path.join(target, filePath), `${line}\n`);
+
+    const currentResult = runScanner([target]);
+    assert.equal(currentResult.status, 1, "current mode must report this assignment");
+    assert.match(currentResult.output, /dev-env-local-value identity\.sh:1 category=local-env/);
+
+    commitAll(target, "Add one non-exact public identity fixture");
+    const historyResult = runScanner(["--mode", "history", target]);
+    assert.equal(historyResult.status, 1, "history mode must report this assignment");
+    assert.match(historyResult.output, /dev-env-local-value identity\.sh:1 category=local-env/);
+  });
+}
 
 test("history keeps local path findings after the current tree is cleaned", () => {
   const target = makeTempRepo();

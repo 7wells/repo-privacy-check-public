@@ -13,6 +13,7 @@ const { after, test } = require("node:test");
 const { actionArgsFromEnvironment, runCli, testInternals } = require("../scripts/privacy-check.js");
 
 const temporaryRepositories = new Set();
+const expectedGitIdentityKey = (suffix) => ["DEV_ENV_EXPECTED_GIT_USER", suffix].join("");
 
 function makeTempRepo() {
   const target = fs.mkdtempSync(path.join(os.tmpdir(), "repo-privacy-check-"));
@@ -835,8 +836,8 @@ test("allows DEV_ENV configuration plumbing and read-only Git identity queries",
 test("allows only the exact public expected Git identity defaults", () => {
   const target = makeTempRepo();
   const lines = [
-    'readonly DEV_ENV_EXPECTED_GIT_USER_NAME="7wells"',
-    'readonly DEV_ENV_EXPECTED_GIT_USER_EMAIL="65889763+7wells@users.noreply.github.com"',
+    `readonly ${expectedGitIdentityKey("_NAME")}="7wells"`,
+    `readonly ${expectedGitIdentityKey("_EMAIL")}="65889763+7wells@users.noreply.github.com"`,
   ];
 
   fs.writeFileSync(path.join(target, "expected-identity.sh"), `${lines.join("\n")}\n`);

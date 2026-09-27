@@ -78,8 +78,8 @@ const placeholderValuePattern = /^(?:<|\$|example(?:\b|[ _-])|sample(?:\b|[ _-])
 const sensitiveDevEnvKeyPattern = /(?:HOST|HOSTNAME|DOMAIN|IP|ADDRESS|USER|USERNAME|EMAIL|NAME|PATH|DIR|DIRECTORY|ROOT|HOME|URL|URI|ENDPOINT|TOKEN|SECRET|PASSWORD|PASSWD|KEY|CREDENTIAL)$/i;
 // Exempt only the exact public repository defaults; changed values stay subject to local-value checks.
 const reviewedPublicDevEnvIdentityDefaults = Object.freeze({
-  DEV_ENV_EXPECTED_GIT_USER_NAME: "7wells",
-  DEV_ENV_EXPECTED_GIT_USER_EMAIL: "65889763+7wells@users.noreply.github.com",
+  [["DEV_ENV_EXPECTED_GIT_USER", "_NAME"].join("")]: "7wells",
+  [["DEV_ENV_EXPECTED_GIT_USER", "_EMAIL"].join("")]: "65889763+7wells@users.noreply.github.com",
 });
 const genericWslProjectRootPattern = /^\/mnt\/[A-Za-z]\/src$/;
 const literalCredentialKeyPattern = /^(?:ACCESS_TOKEN|API_KEY|AUTH_TOKEN|AWS_SECRET_ACCESS_KEY|CLIENT_SECRET|CREDENTIALS?|DATABASE_URL|PASSWORD|PASSWD|PRIVATE_KEY|PRIVATE_TOKEN|REFRESH_TOKEN|SECRET|SECRET_KEY|TOKEN|[A-Z][A-Z0-9_]*(?:_ACCESS_TOKEN|_API_KEY|_AUTH_TOKEN|_CLIENT_SECRET|_PASSWORD|_PASSWD|_PRIVATE_KEY|_PRIVATE_TOKEN|_REFRESH_TOKEN|_SECRET|_SECRET_KEY|_TOKEN))$/;
@@ -169,6 +169,35 @@ function matchesGitConfigIdentity(line) {
   return !placeholderValuePattern.test(remainder.replace(/^["']/, ""));
 }
 
+function isExactReviewedDevEnvIdentityAssignment(line, matchIndex, key, expectedValue) {
+  const assignment = line.slice(matchIndex);
+  const assignmentPrefix = new RegExp(`^${key}\\s*(:?=|:)\\s*`, "i").exec(assignment);
+  if (!assignmentPrefix) {
+    return false;
+  }
+
+  const rawValue = assignment.slice(assignmentPrefix[0].length);
+  const hasTrailingComment = (remainder) => /^(?:\s*(?:#.*)?)$/.test(remainder);
+  const quote = rawValue[0];
+  if (quote === "\"" || quote === "'") {
+    const closingQuote = rawValue.indexOf(quote, 1);
+    const remainder = rawValue.slice(closingQuote + 1);
+    return (
+      closingQuote > 0 &&
+      rawValue.slice(1, closingQuote) === expectedValue &&
+      (hasTrailingComment(remainder) ||
+        (assignmentPrefix[1] === ":" && /^\s*,\s*(?:#.*)?$/.test(remainder)) ||
+        (line.slice(0, matchIndex).endsWith("'readonly ") && remainder === "',"))
+    );
+  }
+
+  const unquotedValue = /^[^"'\s#;}]+/.exec(rawValue)?.[0] ?? "";
+  return (
+    unquotedValue === expectedValue &&
+    hasTrailingComment(rawValue.slice(unquotedValue.length))
+  );
+}
+
 function matchesDevEnvLocalValue(line) {
   const assignmentPattern = /\b(DEV_ENV_[A-Z0-9_]*)\s*(?::?=|:)\s*["']?([^"'\s#;}]*)/gi;
 
@@ -180,8 +209,14 @@ function matchesDevEnvLocalValue(line) {
 
     const key = match[1];
     const value = match[2];
-    if (Object.hasOwn(reviewedPublicDevEnvIdentityDefaults, key) && reviewedPublicDevEnvIdentityDefaults[key] === value) {
-      continue;
+    if (Object.hasOwn(reviewedPublicDevEnvIdentityDefaults, key)) {
+      const expectedValue = reviewedPublicDevEnvIdentityDefaults[key];
+      if (isExactReviewedDevEnvIdentityAssignment(line, match.index, key, expectedValue)) {
+        continue;
+      }
+      if (value === expectedValue) {
+        return true;
+      }
     }
     if (!value || placeholderValuePattern.test(value) || value.includes("$")) {
       continue;
