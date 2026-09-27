@@ -96,6 +96,67 @@ function assertReportedFinding(mode, relativePath, expectedPath, privateIdentity
   }
 }
 
+function scanHomePathFixture(mode, content) {
+  const target = makeTempRepo();
+  const fixturePath = path.join(target, "fixture.json");
+  const reportPath = path.join(target, ".git", "privacy-report.json");
+  fs.writeFileSync(fixturePath, `${content}\n`);
+
+  if (mode === "history") {
+    execFileSync("git", ["add", "fixture.json"], { cwd: target, stdio: "ignore" });
+    execFileSync(
+      "git",
+      [
+        "-c",
+        "user.name=Example User",
+        "-c",
+        "user.email=example@example.invalid",
+        "commit",
+        "--quiet",
+        "-m",
+        "Add Windows home path fixture",
+      ],
+      { cwd: target, stdio: "ignore" },
+    );
+  }
+
+  const modeArgs = mode === "history" ? ["--mode", "history"] : [];
+  const result = runScanner([...modeArgs, "--report", reportPath, target]);
+  const reportText = fs.readFileSync(reportPath, "utf8");
+  return { result, reportText, report: JSON.parse(reportText) };
+}
+
+function jsonEscapedWindowsHome(userName) {
+  const rawPath = windowsHome(userName).replaceAll("\\", "\\\\");
+  assert.equal([...rawPath].filter((character) => character === "\\").length, 6);
+  return { content: `{"path":"${rawPath}"}`, rawPath };
+}
+
+function assertHomePathFinding(mode, content, privatePath, privateIdentity) {
+  const { result, reportText, report } = scanHomePathFixture(mode, content);
+  const finding = report.findings.find((entry) => entry.ruleId === "home-directory-path");
+
+  assert.equal(result.status, 1);
+  assert.ok(result.output.includes("home-directory-path fixture.json:1 category=local-path"));
+  assert.equal(result.output.includes(privatePath), false);
+  assert.equal(result.output.includes(privateIdentity), false);
+  assert.ok(finding);
+  assert.equal(finding.ruleId, "home-directory-path");
+  assert.equal(finding.file, "fixture.json");
+  assert.equal(finding.line, 1);
+  assert.equal(finding.category, "local-path");
+  assert.equal(finding.source, mode);
+  assert.equal(reportText.includes(privatePath), false);
+  assert.equal(reportText.includes(privateIdentity), false);
+}
+
+function assertNoHomePathFinding(mode, content) {
+  const { result, report } = scanHomePathFixture(mode, content);
+
+  assert.equal(result.status, 0);
+  assert.equal(report.findings.some((entry) => entry.ruleId === "home-directory-path"), false);
+}
+
 function runScanner(args) {
   const stdout = [];
   const stderr = [];
@@ -278,6 +339,38 @@ for (const [relativePath, description] of [
   for (const mode of ["current", "history"]) {
     test(`preserves ${description} in ${mode} finding output and report`, () => {
       assertReportedFinding(mode, relativePath, relativePath);
+    });
+  }
+}
+
+for (const mode of ["current", "history"]) {
+  test(`detects a normal private Windows home path in ${mode}`, () => {
+    const privatePath = windowsHome("private-user");
+
+    assertHomePathFinding(mode, privatePath, privatePath, "private-user");
+  });
+
+  test(`detects a JSON-escaped private Windows home path in ${mode}`, () => {
+    const { content, rawPath } = jsonEscapedWindowsHome("private-user");
+
+    assertHomePathFinding(mode, content, rawPath, "private-user");
+  });
+
+  for (const userName of ["dev", "minecraft"]) {
+    test(`allows JSON-escaped reviewed Windows user ${userName} in ${mode}`, () => {
+      assertNoHomePathFinding(mode, jsonEscapedWindowsHome(userName).content);
+    });
+  }
+
+  test(`allows the JSON-escaped <USER> placeholder in ${mode}`, () => {
+    assertNoHomePathFinding(mode, jsonEscapedWindowsHome("<USER>").content);
+  });
+
+  for (const userName of ["Dev", "dev2", "developer", "<user>", "<USERNAME>"]) {
+    test(`detects JSON-escaped Windows user ${userName} in ${mode}`, () => {
+      const { content, rawPath } = jsonEscapedWindowsHome(userName);
+
+      assertHomePathFinding(mode, content, rawPath, userName);
     });
   }
 }

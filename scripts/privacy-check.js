@@ -317,7 +317,7 @@ function matchesHomeDirectoryPath(line) {
   const patterns = [
     /(?:^|[\s"'=:])\/home\/([^/\s"'`]+)/g,
     /(?:^|[\s"'=:])\/Users\/([^/\s"'`]+)/g,
-    /(?:^|[\s"'=:])[A-Za-z]:\\Users\\([^\\\s"'`]+)/g,
+    /(?:^|[\s"'=:])[A-Za-z]:\\{1,2}Users\\{1,2}([^\\\s"'`]+)/g,
   ];
 
   for (const pattern of patterns) {
