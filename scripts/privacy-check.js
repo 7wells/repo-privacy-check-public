@@ -518,7 +518,7 @@ const contentRules = [
   {
     ruleId: "private-key-header",
     category: "private-key",
-    pattern: /^-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----\s*$/,
+    pattern: /^[ \t]*(?:\uFEFF[ \t]*)?-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----\s*$/,
   },
   {
     ruleId: "github-token",
@@ -882,14 +882,52 @@ function checkPathRules(findings, relativePath, dirent, source) {
   }
 }
 
-function isProbablyBinary(buffer) {
-  const sampleLength = Math.min(buffer.length, BINARY_SAMPLE_BYTES);
-  for (let index = 0; index < sampleLength; index += 1) {
-    if (buffer[index] === 0) {
-      return true;
+function decodeUtf16Buffer(buffer, encoding) {
+  // Swap a copy for BE so neither the caller's bytes nor history blob identity changes.
+  const littleEndianBuffer = encoding === "utf16be" ? Buffer.from(buffer).swap16() : buffer;
+  return littleEndianBuffer.toString("utf16le");
+}
+
+function detectTextEncoding(buffer, byteLength = buffer.length) {
+  const sample = buffer.subarray(0, BINARY_SAMPLE_BYTES);
+  let utf16Encoding = null;
+
+  if (byteLength % 2 === 0 && sample.length >= 2 && sample.length % 2 === 0) {
+    if (sample[0] === 0xff && sample[1] === 0xfe) {
+      utf16Encoding = "utf16le";
+    } else if (sample[0] === 0xfe && sample[1] === 0xff) {
+      utf16Encoding = "utf16be";
+    } else if (sample.length >= 16) {
+      let evenNuls = 0;
+      let oddNuls = 0;
+      for (let index = 0; index < sample.length; index += 2) {
+        evenNuls += sample[index] === 0 ? 1 : 0;
+        oddNuls += sample[index + 1] === 0 ? 1 : 0;
+      }
+
+      // BOM-less detection needs at least eight code units and strong, one-sided NUL parity.
+      const requiredNuls = sample.length / 2 * 0.8;
+      if (oddNuls >= requiredNuls && evenNuls === 0) {
+        utf16Encoding = "utf16le";
+      } else if (evenNuls >= requiredNuls && oddNuls === 0) {
+        utf16Encoding = "utf16be";
+      }
     }
   }
-  return false;
+
+  if (utf16Encoding) {
+    const textSample = decodeUtf16Buffer(sample, utf16Encoding);
+    // A BOM or NUL parity alone must not turn control-heavy binary data into text.
+    if (!/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(textSample)) {
+      return utf16Encoding;
+    }
+  }
+
+  return sample.includes(0) ? null : "utf8";
+}
+
+function isProbablyBinary(buffer, byteLength = buffer.length) {
+  return detectTextEncoding(buffer, byteLength) === null;
 }
 
 function checkContentRules(findings, relativePath, content, source) {
@@ -925,7 +963,8 @@ function checkContentRules(findings, relativePath, content, source) {
 }
 
 function classifyTextBuffer(buffer) {
-  if (isProbablyBinary(buffer)) {
+  const encoding = detectTextEncoding(buffer);
+  if (encoding === null) {
     return { kind: "binary" };
   }
 
@@ -933,7 +972,8 @@ function classifyTextBuffer(buffer) {
     return { kind: "too-large" };
   }
 
-  return { kind: "text", content: buffer.toString("utf8") };
+  const content = encoding === "utf8" ? buffer.toString("utf8") : decodeUtf16Buffer(buffer, encoding);
+  return { kind: "text", content };
 }
 
 function readTextFile(filePath) {
@@ -945,7 +985,7 @@ function readTextFile(filePath) {
     const sample = Buffer.alloc(Math.min(stat.size, BINARY_SAMPLE_BYTES));
     fs.readSync(descriptor, sample, 0, sample.length, 0);
 
-    if (isProbablyBinary(sample)) {
+    if (isProbablyBinary(sample, stat.size)) {
       return { kind: "binary" };
     }
 
@@ -1513,6 +1553,7 @@ module.exports = {
   runCli,
   testInternals: {
     checkPathRules,
+    classifyTextBuffer,
     matchesHomeDirectoryPath,
     matchesSensitiveUrlQuery,
     parseGenericHomeUserNames,
