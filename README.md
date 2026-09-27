@@ -48,6 +48,9 @@ jobs:
 ```
 
 The workflow checks out the caller repository with full history, runs current and history scans, and requires read-only repository contents permission. History mode scans the complete ancestor history reachable from the checked-out `HEAD`; unrelated local branches and other refs are outside that invocation's scope. The workflow does not upload reports or artifacts.
+
+History mode requires that ancestor history to be complete locally. It rejects shallow repositories with exit status `2` rather than scanning only the available commits. Configure `actions/checkout` with `fetch-depth: 0`; the reusable workflow already does this. Current mode remains available in shallow checkouts. The scanner never fetches missing history.
+
 When present, the reusable workflow passes the caller's
 `.privacy-history-attestations.json` file only to the history scan. Repositories
 without that file receive the same full scan with no attestations.
@@ -88,7 +91,7 @@ The scanner focuses on high-confidence privacy and secret risks:
   root `/mnt/<drive-letter>/src` is allowed, but paths below or merely prefixed
   by that root remain findings.
 - Executable patterns that expose environments, credentials, sensitive files, diffs, or grep matches.
-- Committed log files.
+- `.log` files are scanned for sensitive content; the extension alone is not blocked.
 
 Unsafe-logging rules apply to executable and configuration content in the current tree. History scans retain rules for persistent secrets, credentials, private paths, and private URLs without forcing rewrites for obsolete behavioral patterns.
 

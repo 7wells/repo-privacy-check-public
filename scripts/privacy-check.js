@@ -1163,8 +1163,19 @@ function listTrackedCodexDirectories(targetPath) {
 
 function listHistoryCommits(targetPath) {
   try {
+    // Git resolves the shallow state for repositories and worktrees; require an explicit complete result.
+    const shallowState = git(targetPath, ["rev-parse", "--is-shallow-repository"]).trim();
+    if (shallowState === "true") {
+      failUsage("History mode requires a complete Git history; shallow repository detected.");
+    }
+    if (shallowState !== "false") {
+      failUsage("History mode requires a readable Git repository.");
+    }
     return git(targetPath, ["rev-list", "HEAD"]).trim().split(/\r?\n/).filter(Boolean);
-  } catch {
+  } catch (error) {
+    if (error instanceof UsageError) {
+      throw error;
+    }
     failUsage("History mode requires a readable Git repository.");
   }
 }
