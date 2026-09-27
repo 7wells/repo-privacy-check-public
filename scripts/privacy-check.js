@@ -200,7 +200,56 @@ function isExactReviewedDevEnvIdentityAssignment(line, matchIndex, key, expected
   );
 }
 
+function matchesDevEnvLocalLiteral(key, value, includeSensitiveKey = true) {
+  if (!value || placeholderValuePattern.test(value) || value.includes("$")) {
+    return false;
+  }
+  if (genericWslProjectRootPattern.test(value)) {
+    return false;
+  }
+
+  const isLoopbackHostPlaceholder = value === "127.0.0.1" && sensitiveDevEnvHostKeyPattern.test(key);
+  const isPrivateIpv4 = /^(?:(?:10|127)\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})$/.test(value);
+  return (
+    (includeSensitiveKey && sensitiveDevEnvKeyPattern.test(key) && !isLoopbackHostPlaceholder) ||
+    (includeSensitiveKey && sensitiveDevEnvHostKeyPattern.test(key) && !isLoopbackHostPlaceholder) ||
+    (includeSensitiveKey && personalDevEnvNameKeyPattern.test(key)) ||
+    /^(?:\/|~\/|[A-Za-z]:\\)/.test(value) ||
+    /@/.test(value) ||
+    (isPrivateIpv4 && !isLoopbackHostPlaceholder) ||
+    /\.(?:internal|lan|local)(?::\d+)?(?:\/|$)/i.test(value) ||
+    isPrivateDevEnvUrl(value)
+  );
+}
+
+function isCompleteQuotedJsonValue(line, match) {
+  const remainder = line.slice(match.index + match[0].length);
+  return /^\s*,/.test(remainder) || /^\s*\}\s*$/.test(remainder);
+}
+
 function matchesDevEnvLocalValue(line) {
+  const fallbackPattern = /\b(DEV_ENV_[A-Z0-9_]*)\s*=\s*"\$\{[A-Za-z_][A-Za-z0-9_]*:-([^}"'$]*)\}"(?=\s*(?:#.*)?$)/g;
+  for (const match of line.matchAll(fallbackPattern)) {
+    if (matchesDevEnvLocalLiteral(match[1], match[2], false)) {
+      return true;
+    }
+  }
+
+  const jsonAssignmentPattern = /"(DEV_ENV_[A-Z0-9_]*)"\s*:\s*"([^"\\]*)"/g;
+  for (const match of line.matchAll(jsonAssignmentPattern)) {
+    const key = match[1];
+    const value = match[2];
+    if (Object.hasOwn(reviewedPublicDevEnvIdentityDefaults, key)) {
+      const expectedValue = reviewedPublicDevEnvIdentityDefaults[key];
+      if (value === expectedValue && isCompleteQuotedJsonValue(line, match)) {
+        continue;
+      }
+    }
+    if (matchesDevEnvLocalLiteral(key, value)) {
+      return true;
+    }
+  }
+
   const assignmentPattern = /\b(DEV_ENV_[A-Z0-9_]*)\s*(?::?=|:)\s*["']?([^"'\s#;}]*)/gi;
 
   for (const match of line.matchAll(assignmentPattern)) {
@@ -210,36 +259,21 @@ function matchesDevEnvLocalValue(line) {
     }
 
     const key = match[1];
-    const value = match[2];
+    const rawValue = match[2];
     if (Object.hasOwn(reviewedPublicDevEnvIdentityDefaults, key)) {
       const expectedValue = reviewedPublicDevEnvIdentityDefaults[key];
       if (isExactReviewedDevEnvIdentityAssignment(line, match.index, key, expectedValue)) {
         continue;
       }
-      if (value === expectedValue) {
+      if (rawValue === expectedValue) {
         return true;
       }
     }
-    if (!value || placeholderValuePattern.test(value) || value.includes("$")) {
-      continue;
+    let value = rawValue;
+    if (value.includes("$")) {
+      value = /^([^$]+)\$[A-Za-z_][A-Za-z0-9_]*$/.exec(value)?.[1] ?? "";
     }
-    if (genericWslProjectRootPattern.test(value)) {
-      continue;
-    }
-
-    const isLoopbackHostPlaceholder = value === "127.0.0.1" && sensitiveDevEnvHostKeyPattern.test(key);
-    const isPrivateIpv4 = /^(?:(?:10|127)\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})$/.test(value);
-    const looksLikeLocalValue =
-      (sensitiveDevEnvKeyPattern.test(key) && !isLoopbackHostPlaceholder) ||
-      (sensitiveDevEnvHostKeyPattern.test(key) && !isLoopbackHostPlaceholder) ||
-      personalDevEnvNameKeyPattern.test(key) ||
-      /^(?:\/|~\/|[A-Za-z]:\\)/.test(value) ||
-      /@/.test(value) ||
-      (isPrivateIpv4 && !isLoopbackHostPlaceholder) ||
-      /\.(?:internal|lan|local)(?::\d+)?(?:\/|$)/i.test(value) ||
-      isPrivateDevEnvUrl(value);
-
-    if (looksLikeLocalValue) {
+    if (matchesDevEnvLocalLiteral(key, value)) {
       return true;
     }
   }

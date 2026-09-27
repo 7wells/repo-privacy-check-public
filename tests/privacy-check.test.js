@@ -15,6 +15,11 @@ const { actionArgsFromEnvironment, runCli, testInternals } = require("../scripts
 const temporaryRepositories = new Set();
 const expectedGitIdentityKey = (suffix) => ["DEV_ENV_EXPECTED_GIT_USER", suffix].join("");
 const devEnvKey = (...segments) => ["DEV_ENV", ...segments].join("_");
+const jsonDevEnvLine = (segments, value) => JSON.stringify({ [devEnvKey(...segments)]: value });
+const mixedDevEnvLine = (segments, literal, variable) =>
+  `${devEnvKey(...segments)}=${literal}${["$", variable].join("")}`;
+const fallbackDevEnvLine = (segments, variable, fallback) =>
+  `${devEnvKey(...segments)}="${["$", "{", variable, ":-", fallback, "}"].join("")}"`;
 
 function makeTempRepo() {
   const target = fs.mkdtempSync(path.join(os.tmpdir(), "repo-privacy-check-"));
@@ -908,6 +913,156 @@ for (const { name, key, value } of devEnvPublicValueFixtures) {
   test(`current scan allows ${name} in a DEV_ENV assignment`, () => {
     const target = makeTempRepo();
     fs.writeFileSync(path.join(target, "fixture.sh"), `${devEnvKey(...key)}=${value}\n`);
+
+    const result = runScanner([target]);
+    assert.equal(result.status, 0, combinedOutput(result));
+  });
+}
+
+const quotedJsonDevEnvFindings = [
+  { name: "a concrete private host value", key: ["HOST"], value: "workstation" },
+  { name: "a private URL value", key: ["BASE", "URL"], value: ["https://service", ".internal"].join("") },
+];
+
+for (const { name, key, value } of quotedJsonDevEnvFindings) {
+  test(`current scan reports a quoted JSON key with ${name}`, () => {
+    const target = makeTempRepo();
+    fs.writeFileSync(path.join(target, "fixture.json"), `${jsonDevEnvLine(key, value)}\n`);
+
+    const result = runScanner([target]);
+    const output = combinedOutput(result);
+    assert.equal(result.status, 1);
+    assert.match(output, /dev-env-local-value fixture\.json:1 category=local-env/);
+    assertRedacted(output, value);
+  });
+}
+
+const quotedJsonDevEnvAllowances = [
+  { name: "an example host placeholder", key: ["HOST"], value: "example-host" },
+  { name: "a public host name", key: ["HOST"], value: "example.org" },
+  { name: "a generic service name", key: ["SERVICE", "NAME"], value: "widget" },
+];
+
+for (const { name, key, value } of quotedJsonDevEnvAllowances) {
+  test(`current scan allows quoted JSON with ${name}`, () => {
+    const target = makeTempRepo();
+    fs.writeFileSync(path.join(target, "fixture.json"), `${jsonDevEnvLine(key, value)}\n`);
+
+    const result = runScanner([target]);
+    assert.equal(result.status, 0, combinedOutput(result));
+  });
+}
+
+test("current scan allows exact reviewed Git identity values in JSON", () => {
+  const target = makeTempRepo();
+  const identity = {
+    [expectedGitIdentityKey("_NAME")]: "7wells",
+    [expectedGitIdentityKey("_EMAIL")]: ["65889763+7wells", "@users.noreply.github.com"].join(""),
+  };
+  fs.writeFileSync(path.join(target, "identity.json"), `${JSON.stringify(identity)}\n`);
+
+  const result = runScanner([target]);
+  assert.equal(result.status, 0, combinedOutput(result));
+});
+
+test("current scan reports payload appended after an exact JSON Git identity value", () => {
+  const target = makeTempRepo();
+  const exactPair = JSON.stringify({ [expectedGitIdentityKey("_NAME")]: "7wells" });
+  const line = `${exactPair.slice(0, -1)} synthetic-person}`;
+  fs.writeFileSync(path.join(target, "identity.json"), `${line}\n`);
+
+  const result = runScanner([target]);
+  const output = combinedOutput(result);
+  assert.equal(result.status, 1);
+  assert.match(output, /dev-env-local-value identity\.json:1 category=local-env/);
+  assert.doesNotMatch(output, /synthetic-person/);
+});
+
+const mixedDevEnvFindings = [
+  {
+    name: "a local host prefix followed by a variable",
+    line: mixedDevEnvLine(["HOST"], "workstation", "ZONE"),
+    value: "workstation",
+  },
+  {
+    name: "a private URL prefix followed by a variable",
+    line: mixedDevEnvLine(["BASE", "URL"], ["https://service", ".internal"].join(""), "ZONE"),
+    value: ["https://service", ".internal"].join(""),
+  },
+  {
+    name: "a home path prefix followed by a variable",
+    line: mixedDevEnvLine(["PROJECT", "DIR"], ["", "home", "private-user", "project"].join("/"), "ZONE"),
+    value: ["", "home", "private-user", "project"].join("/"),
+  },
+];
+
+for (const { name, line, value } of mixedDevEnvFindings) {
+  test(`current scan reports ${name}`, () => {
+    const target = makeTempRepo();
+    fs.writeFileSync(path.join(target, "fixture.sh"), `${line}\n`);
+
+    const result = runScanner([target]);
+    const output = combinedOutput(result);
+    assert.equal(result.status, 1);
+    assert.match(output, /dev-env-local-value fixture\.sh:1 category=local-env/);
+    assertRedacted(output, value);
+  });
+}
+
+const mixedDevEnvAllowances = [
+  { name: "a direct dynamic host", line: `${devEnvKey("HOST")}=$HOST` },
+  { name: "a brace-only dynamic host", line: `${devEnvKey("HOST")}=${["$", "{", "HOST", "}"].join("")}` },
+  { name: "an example prefix with a variable", line: mixedDevEnvLine(["HOST"], "example", "ZONE") },
+  {
+    name: "a public URL prefix with a variable",
+    line: mixedDevEnvLine(["BASE", "URL"], "https://example.org/", "ZONE"),
+  },
+];
+
+for (const { name, line } of mixedDevEnvAllowances) {
+  test(`current scan allows ${name}`, () => {
+    const target = makeTempRepo();
+    fs.writeFileSync(path.join(target, "fixture.sh"), `${line}\n`);
+
+    const result = runScanner([target]);
+    assert.equal(result.status, 0, combinedOutput(result));
+  });
+}
+
+const shellFallbackFindings = [
+  { name: "a local hostname", fallback: ["workstation", ".lan"].join("") },
+  { name: "a private IPv4 address", fallback: ["192.168", "1.23"].join(".") },
+  {
+    name: "a local home path",
+    key: ["PROJECT", "DIR"],
+    variable: "PROJECT_DIR",
+    fallback: ["", "home", "private-user", "project"].join("/"),
+  },
+];
+
+for (const { name, key = ["HOST"], variable = "HOST", fallback } of shellFallbackFindings) {
+  test(`current scan reports a shell fallback with ${name}`, () => {
+    const target = makeTempRepo();
+    fs.writeFileSync(path.join(target, "fixture.sh"), `${fallbackDevEnvLine(key, variable, fallback)}\n`);
+
+    const result = runScanner([target]);
+    const output = combinedOutput(result);
+    assert.equal(result.status, 1);
+    assert.match(output, /dev-env-local-value fixture\.sh:1 category=local-env/);
+    assertRedacted(output, fallback);
+  });
+}
+
+const shellFallbackAllowances = [
+  { name: "a direct dynamic expansion", fallback: ["$", "{", "HOST", "}"].join("") },
+  { name: "a public hostname fallback", fallback: "example.org" },
+  { name: "a generic placeholder fallback", fallback: "placeholder" },
+];
+
+for (const { name, fallback } of shellFallbackAllowances) {
+  test(`current scan allows ${name}`, () => {
+    const target = makeTempRepo();
+    fs.writeFileSync(path.join(target, "fixture.sh"), `${fallbackDevEnvLine(["HOST"], "HOST", fallback)}\n`);
 
     const result = runScanner([target]);
     assert.equal(result.status, 0, combinedOutput(result));
