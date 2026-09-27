@@ -180,6 +180,51 @@ test("scans tracked files even when a later Git rule ignores their path", () => 
   assertRedacted(output, rawSecret);
 });
 
+for (const directory of ["build", ".cache"]) {
+  test(`scans a tracked file under ${directory} by default`, () => {
+    const target = makeTempRepo();
+    const relativePath = `${directory}/tracked.txt`;
+    const rawSecret = ["ghp", "abcdefghijklmnopqrstuvwxyzABCDEFGHIJ1234567890"].join("_");
+
+    execFileSync("git", ["init", "--quiet"], { cwd: target, stdio: "ignore" });
+    fs.mkdirSync(path.dirname(path.join(target, relativePath)), { recursive: true });
+    fs.writeFileSync(path.join(target, relativePath), rawSecret);
+    execFileSync("git", ["add", "--force", "--", relativePath], { cwd: target, stdio: "ignore" });
+
+    const result = runScanner([target]);
+    const output = combinedOutput(result);
+    assert.equal(result.status, 1);
+    assert.match(output, new RegExp(`github-token ${directory.replaceAll(".", "\\.")}\\/tracked\\.txt:1 category=token`));
+    assertRedacted(output, rawSecret);
+  });
+
+  for (const { kind, ignoreRule } of [
+    { kind: "untracked", ignoreRule: null },
+    { kind: "Git-ignored", ignoreRule: `${directory}/artifact.txt\n` },
+  ]) {
+    test(`keeps ${kind} artifacts under ${directory} excluded unless requested`, () => {
+      const target = makeTempRepo();
+      const relativePath = `${directory}/artifact.txt`;
+      const rawSecret = ["ghp", "abcdefghijklmnopqrstuvwxyzABCDEFGHIJ1234567890"].join("_");
+
+      execFileSync("git", ["init", "--quiet"], { cwd: target, stdio: "ignore" });
+      if (ignoreRule) fs.writeFileSync(path.join(target, ".gitignore"), ignoreRule);
+      fs.mkdirSync(path.dirname(path.join(target, relativePath)), { recursive: true });
+      fs.writeFileSync(path.join(target, relativePath), rawSecret);
+
+      const defaultResult = runScanner([target]);
+      assert.equal(defaultResult.status, 0, `${kind} artifact must remain excluded by default`);
+      assertRedacted(combinedOutput(defaultResult), rawSecret);
+
+      const includedResult = runScanner(["--include-ignored", target]);
+      const output = combinedOutput(includedResult);
+      assert.equal(includedResult.status, 1, "include-ignored must scan this artifact");
+      assert.match(output, new RegExp(`github-token ${directory.replaceAll(".", "\\.")}\\/artifact\\.txt:1 category=token`));
+      assertRedacted(output, rawSecret);
+    });
+  }
+}
+
 test("maps GitHub Action inputs to CLI arguments without evaluating values", () => {
   const args = actionArgsFromEnvironment({
     "INPUT_HISTORY-ATTESTATIONS": "history-attestations.json",

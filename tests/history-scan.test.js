@@ -104,6 +104,23 @@ test("history detects privacy data in an ancestor of HEAD after it is removed", 
   assert.equal(result.output.includes(token), false);
 });
 
+for (const directory of ["build", ".cache"]) {
+  test(`history detects a tracked historical file under ${directory}`, () => {
+    const target = makeTempRepo();
+    const relativePath = `${directory}/fixture.txt`;
+    const token = ["ghp", "abcdefghijklmnopqrstuvwxyzABCDEFGHIJ1234567890"].join("_");
+
+    fs.mkdirSync(path.dirname(path.join(target, relativePath)), { recursive: true });
+    fs.writeFileSync(path.join(target, relativePath), `${token}\n`);
+    commitAll(target, `Add tracked ${directory} privacy fixture`);
+
+    const result = runScanner(["--mode", "history", target]);
+    assert.equal(result.status, 1);
+    assert.match(result.output, new RegExp(`github-token ${directory.replaceAll(".", "\\.")}\\/fixture\\.txt:1 category=token`));
+    assert.equal(result.output.includes(token), false);
+  });
+}
+
 test("history ignores privacy findings reachable only from an unrelated branch", () => {
   const target = makeTempRepo();
   const localPath = ["", "home", "private-user", "unrelated-branch"].join("/");

@@ -664,8 +664,8 @@ function addFinding(findings, ruleId, filePath, lineNumber, category, source) {
   });
 }
 
-function isIgnoredPath(relativePath, includeIgnored) {
-  if (includeIgnored) {
+function isIgnoredPath(relativePath, includeIgnored, isTracked = false) {
+  if (includeIgnored || isTracked) {
     return false;
   }
 
@@ -836,8 +836,11 @@ function listGitVisiblePaths(targetPath) {
       ["ls-files", "--cached", "--others", "--exclude-standard", "-z", "--"],
       "buffer",
     );
+    const trackedOutput = git(targetPath, ["ls-files", "--cached", "-z", "--"], "buffer");
     const files = new Set();
     const directories = new Set();
+    const trackedFiles = new Set();
+    const trackedDirectories = new Set();
 
     for (const filePath of output.toString("utf8").split("\0").filter(Boolean)) {
       const normalizedPath = normalizeGitPath(filePath);
@@ -849,7 +852,17 @@ function listGitVisiblePaths(targetPath) {
       }
     }
 
-    return { directories, files };
+    for (const filePath of trackedOutput.toString("utf8").split("\0").filter(Boolean)) {
+      const normalizedPath = normalizeGitPath(filePath);
+      const pathParts = normalizedPath.split("/");
+      trackedFiles.add(normalizedPath);
+
+      for (let index = 1; index < pathParts.length; index += 1) {
+        trackedDirectories.add(pathParts.slice(0, index).join("/"));
+      }
+    }
+
+    return { directories, files, trackedDirectories, trackedFiles };
   } catch {
     // Non-Git directories retain the regular filesystem walk behavior.
     return null;
@@ -874,12 +887,16 @@ function walkCurrentTree(targetPath, includeIgnored) {
     for (const entry of entries) {
       const entryPath = path.join(directoryPath, entry.name);
       const relativePath = toDisplayPath(targetPath, entryPath);
+      const normalizedRelativePath = normalizeGitPath(relativePath);
+      const isTrackedPath =
+        gitVisiblePaths !== null &&
+        (gitVisiblePaths.trackedFiles.has(normalizedRelativePath) ||
+          gitVisiblePaths.trackedDirectories.has(normalizedRelativePath));
 
-      if (isIgnoredPath(relativePath, includeIgnored)) {
+      if (isIgnoredPath(relativePath, includeIgnored, isTrackedPath)) {
         continue;
       }
 
-      const normalizedRelativePath = normalizeGitPath(relativePath);
       if (
         gitVisiblePaths !== null &&
         !gitVisiblePaths.files.has(normalizedRelativePath) &&
@@ -1115,7 +1132,7 @@ function scanHistory(targetPath, includeIgnored, attestations, attestationsPath)
       const codexPathIndex = historyPathParts.indexOf(".codex");
       const isCodexDirectoryPath = codexPathIndex >= 0 && codexPathIndex < historyPathParts.length - 1;
 
-      if (isIgnoredPath(relativePath, includeIgnored)) {
+      if (isIgnoredPath(relativePath, includeIgnored, true)) {
         continue;
       }
 
