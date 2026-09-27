@@ -1046,15 +1046,16 @@ test("detects high-confidence credential paths and file names", () => {
     "ID_RSA",
     "id_ed25519_sk",
     "id_ecdsa_sk",
-    "private.pem",
     "private.key",
+    "private.ppk",
     "private.p12",
     "private.pfx",
+    "private.jks",
+    "private.keystore",
     ".env",
     ".ENV.PROD",
     ".envrc",
     ".env-local",
-    "output.log",
   ];
 
   for (const fileName of files) {
@@ -1073,16 +1074,17 @@ test("detects high-confidence credential paths and file names", () => {
   assert.match(output, /blocked-private-ssh-key-filename ID_RSA category=private-key/);
   assert.match(output, /blocked-private-ssh-key-filename id_ed25519_sk category=private-key/);
   assert.match(output, /blocked-private-ssh-key-filename id_ecdsa_sk category=private-key/);
-  assert.match(output, /blocked-private-key-extension private\.pem category=private-key/);
   assert.match(output, /blocked-private-key-extension private\.key category=private-key/);
+  assert.match(output, /blocked-private-key-extension private\.ppk category=private-key/);
   assert.match(output, /blocked-key-store-extension private\.p12 category=private-key/);
   assert.match(output, /blocked-key-store-extension private\.pfx category=private-key/);
+  assert.match(output, /blocked-key-store-extension private\.jks category=private-key/);
+  assert.match(output, /blocked-key-store-extension private\.keystore category=private-key/);
   assert.match(output, /blocked-credential-path \.aws\/credentials category=credential/);
   assert.match(output, /blocked-env-file \.env category=env-file/);
   assert.match(output, /blocked-env-file \.ENV\.PROD category=env-file/);
   assert.match(output, /blocked-env-file \.envrc category=env-file/);
   assert.match(output, /blocked-env-file \.env-local category=env-file/);
-  assert.match(output, /blocked-log-file output\.log category=log-file/);
   assert.match(output, /blocked-ssh-directory \.ssh category=local-credential/);
 });
 

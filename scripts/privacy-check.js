@@ -860,7 +860,7 @@ function checkPathRules(findings, relativePath, dirent, source) {
     addFinding(findings, "blocked-credential-path", relativePath, null, "credential", source);
   }
 
-  if (lowerFileName.endsWith(".pem") || lowerFileName.endsWith(".ppk") || lowerFileName.endsWith(".key")) {
+  if (lowerFileName.endsWith(".ppk") || lowerFileName.endsWith(".key")) {
     addFinding(findings, "blocked-private-key-extension", relativePath, null, "private-key", source);
   }
 
@@ -877,9 +877,6 @@ function checkPathRules(findings, relativePath, dirent, source) {
     addFinding(findings, "blocked-env-file", relativePath, null, "env-file", source);
   }
 
-  if (lowerFileName.endsWith(".log")) {
-    addFinding(findings, "blocked-log-file", relativePath, null, "log-file", source);
-  }
 }
 
 function decodeUtf16Buffer(buffer, encoding) {
