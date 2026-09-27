@@ -53,9 +53,9 @@ function runScanner(args) {
   };
 }
 
-function collectHistoryFindings(target) {
+function collectHistoryFindings(target, args = []) {
   const reportPath = path.join(target, ".git", "history-findings.json");
-  const result = runScanner(["--mode", "history", "--report", reportPath, target]);
+  const result = runScanner(["--mode", "history", "--report", reportPath, ...args, target]);
   const report = JSON.parse(fs.readFileSync(reportPath, "utf8"));
   return { result, findings: report.findings };
 }
@@ -244,6 +244,93 @@ test("history attestations suppress only one exact finding and not another findi
   assert.match(attestedResult.output, /github-token fixture\.sh:2 category=token/);
   assert.equal(attestedResult.output.includes(localHost), false);
   assert.equal(attestedResult.output.includes(token), false);
+});
+
+// Exercise real commits and blobs in both attestation orders, including unchanged
+// matched lines in different blobs: an exact review must not cover another blob.
+for (const fixture of ["local-value", "token", "same-line-different-blob"]) {
+  for (const attestedVersion of ["newer", "older"]) {
+    test(`history keeps the unattested ${fixture} when the ${attestedVersion} blob is attested`, () => {
+      const target = makeTempRepo();
+      const filePath = "fixture.sh";
+      const ruleId = fixture === "token" ? "github-token" : "dev-env-local-value";
+      const olderValue = fixture === "token"
+        ? ["ghp", "A".repeat(40)].join("_")
+        : ["private", "older-fixture"].join("-");
+      const newerValue = fixture === "token"
+        ? ["ghp", "B".repeat(40)].join("_")
+        : fixture === "same-line-different-blob"
+          ? olderValue
+          : ["private", "newer-fixture"].join("-");
+      const line = (value) => fixture === "token" ? value : ["DEV_ENV_HOST", value].join("=");
+
+      fs.writeFileSync(path.join(target, filePath), `${line(olderValue)}\n# Older blob.\n`);
+      commitAll(target, "Add older synthetic finding");
+      const olderScan = collectHistoryFindings(target);
+      assert.equal(olderScan.result.status, 1);
+      assert.equal(olderScan.findings.length, 1);
+      const olderFinding = olderScan.findings[0];
+      assert.equal(olderFinding.ruleId, ruleId);
+      assert.equal(olderFinding.line, 1);
+
+      fs.writeFileSync(path.join(target, filePath), `${line(newerValue)}\n# Newer blob.\n`);
+      commitAll(target, "Add newer synthetic finding at the same location");
+      const newerScan = collectHistoryFindings(target);
+      const newerFinding = newerScan.findings[0];
+      const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: target, encoding: "utf8" }).trim();
+      assert.equal(newerScan.result.status, 1);
+      assert.equal(newerFinding.commit, head);
+      assert.equal(newerFinding.ruleId, ruleId);
+      assert.equal(newerFinding.line, 1);
+      assert.notEqual(newerFinding.blob, olderFinding.blob);
+      if (fixture === "same-line-different-blob") {
+        assert.equal(newerScan.findings.length, 1);
+        assert.equal(newerFinding.findingId, olderFinding.findingId);
+      } else {
+        assert.equal(newerScan.findings.length, 2);
+        assert.notEqual(newerFinding.findingId, olderFinding.findingId);
+      }
+
+      const reviewed = attestedVersion === "newer" ? newerFinding : olderFinding;
+      const unreviewed = attestedVersion === "newer" ? olderFinding : newerFinding;
+      const attestationsPath = writeAttestations(target, [toAttestation(reviewed, filePath)]);
+      const attestedScan = collectHistoryFindings(target, ["--history-attestations", attestationsPath]);
+
+      assert.equal(attestedScan.result.status, 1);
+      assert.deepEqual(attestedScan.findings, [unreviewed]);
+      assert.doesNotMatch(attestedScan.result.output, /unused-history-attestation/);
+      assert.equal(attestedScan.result.output.includes(olderValue), false);
+      assert.equal(attestedScan.result.output.includes(newerValue), false);
+
+      const bothAttestedPath = writeAttestations(target, [
+        toAttestation(olderFinding, filePath),
+        toAttestation(newerFinding, filePath),
+      ]);
+      const bothAttestedScan = collectHistoryFindings(target, ["--history-attestations", bothAttestedPath]);
+      assert.equal(bothAttestedScan.result.status, 0);
+      assert.deepEqual(bothAttestedScan.findings, []);
+    });
+  }
+}
+
+test("history reports different values at the same location without attestations", () => {
+  const target = makeTempRepo();
+  const filePath = "fixture.sh";
+  const expectedFindings = [];
+
+  for (const version of ["older", "newer"]) {
+    const value = ["private", version, "fixture"].join("-");
+    fs.writeFileSync(path.join(target, filePath), `${["DEV_ENV_HOST", value].join("=")}\n`);
+    commitAll(target, `Add ${version} synthetic finding`);
+    const { result, findings } = collectHistoryFindings(target);
+    assert.equal(result.status, 1);
+    assert.equal(findings[0].ruleId, "dev-env-local-value");
+    expectedFindings.unshift(findings[0]);
+  }
+
+  const { result, findings } = collectHistoryFindings(target);
+  assert.equal(result.status, 1);
+  assert.deepEqual(findings, expectedFindings);
 });
 
 test("an identical historical finding in a new commit does not inherit an older attestation", () => {

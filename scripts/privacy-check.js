@@ -1108,36 +1108,36 @@ function scanHistory(targetPath, includeIgnored, attestations, attestationsPath)
         }
       }
 
-      // History scans can see the same finding across many commits; report each location once.
+      // Match exact attestations before deduplicating unreviewed findings by line content.
       const newFindings = findings.splice(beforeCount);
       for (const finding of newFindings) {
-        const key = `${finding.ruleId}:${relativePath}:${finding.line || ""}`;
+        if (finding.line && blobContent !== null && entry.type === "blob") {
+          const lineContent = blobContent.split(/\r?\n/)[finding.line - 1] ?? "";
+          finding.commit = commit;
+          finding.blob = entry.object;
+          finding.findingId = createHistoryFindingId(
+            finding.ruleId,
+            relativePath,
+            finding.line,
+            lineContent,
+          );
+          const attestationKey = historyAttestationKey({
+            commit,
+            blob: entry.object,
+            path: relativePath,
+            ruleId: finding.ruleId,
+            line: finding.line,
+            findingId: finding.findingId,
+          });
+          const attestation = attestations.get(attestationKey);
+          if (attestation) {
+            attestation.used = true;
+            continue;
+          }
+        }
+        const key = `${finding.ruleId}:${relativePath}:${finding.line || ""}:${finding.findingId || ""}`;
         if (!seenFindings.has(key)) {
           seenFindings.add(key);
-          if (finding.line && blobContent !== null && entry.type === "blob") {
-            const lineContent = blobContent.split(/\r?\n/)[finding.line - 1] ?? "";
-            finding.commit = commit;
-            finding.blob = entry.object;
-            finding.findingId = createHistoryFindingId(
-              finding.ruleId,
-              relativePath,
-              finding.line,
-              lineContent,
-            );
-            const attestationKey = historyAttestationKey({
-              commit,
-              blob: entry.object,
-              path: relativePath,
-              ruleId: finding.ruleId,
-              line: finding.line,
-              findingId: finding.findingId,
-            });
-            const attestation = attestations.get(attestationKey);
-            if (attestation) {
-              attestation.used = true;
-              continue;
-            }
-          }
           findings.push(finding);
         }
       }
