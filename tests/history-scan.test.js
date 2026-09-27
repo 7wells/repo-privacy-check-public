@@ -592,6 +592,30 @@ test("history keeps local path findings after the current tree is cleaned", () =
   assert.equal(result.output.includes(localPath), false);
 });
 
+function assertHistoryIgnoresCurrentOnlyRule(line, ruleId, message) {
+  const target = makeTempRepo();
+  fs.writeFileSync(path.join(target, "check.sh"), `${line}\n`);
+  commitAll(target, message);
+
+  const result = runScanner(["--mode", "history", target]);
+  assert.equal(result.status, 0, result.output);
+  assert.doesNotMatch(result.output, new RegExp(ruleId));
+}
+
+test("history keeps shell-secret-variable-output current-only", () => {
+  const variable = ["$", ["PRIVATE", "TOKEN"].join("_")].join("");
+  assertHistoryIgnoresCurrentOnlyRule(["echo", `"${variable}"`].join(" "), "shell-secret-variable-output", "Add a current-only secret output fixture");
+});
+
+test("history keeps shell-grep-match-output current-only", () => {
+  assertHistoryIgnoresCurrentOnlyRule(["grep", "pattern", "file"].join(" "), "shell-grep-match-output", "Add a current-only grep output fixture");
+});
+
+test("history keeps runtime-env-dump current-only", () => {
+  const line = ["print", "(", "json", ".dumps", "(", "os", ".environ", ")", ")"].join("");
+  assertHistoryIgnoresCurrentOnlyRule(line, "runtime-env-dump", "Add a current-only environment dump fixture");
+});
+
 test("history ignores obsolete unsafe logging patterns", () => {
   const target = makeTempRepo();
   const unsafeLine = ["grep", "pattern", "file"].join(" ");

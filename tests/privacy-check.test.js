@@ -59,6 +59,16 @@ function assertRedacted(output, sensitiveValue, message = "sensitive value must 
   assert.equal(output.includes(sensitiveValue), false, message);
 }
 
+function scanCurrentLine(line) {
+  const target = makeTempRepo();
+  fs.writeFileSync(path.join(target, "fixture.sh"), `${line}\n`);
+  const result = runScanner([target]);
+  return { result, output: combinedOutput(result) };
+}
+
+const shellVariable = (...segments) => ["$", segments.join("_")].join("");
+const shellBracedVariable = (...segments) => ["${", segments.join("_"), "}"].join("");
+
 test("action metadata avoids unquoted colon-space values", () => {
   const actionMetadata = fs.readFileSync(path.resolve(__dirname, "../action.yml"), "utf8");
   const unsafePlainScalar = /^\s*description:\s+[^"'\n][^\n]*:\s+/m;
@@ -893,6 +903,120 @@ test("detects the original high-confidence content rules", () => {
     assertRedacted(output, value);
   }
 });
+
+const shellSecretOutputFindings = [
+  { name: "TOKEN", line: ["echo", `"${shellVariable("TOKEN")}"`].join(" ") },
+  {
+    name: "SERVICE_TOKEN",
+    line: ["echo", `"${shellBracedVariable("SERVICE", "TOKEN")}"`].join(" "),
+  },
+  {
+    name: "PASSWORD through printf",
+    line: ["printf", '"%s\\n"', `"${shellVariable("PASSWORD")}"`].join(" "),
+  },
+];
+
+for (const { name, line } of shellSecretOutputFindings) {
+  test(`current scan reports output of ${name} as shell-secret-variable-output`, () => {
+    const { result, output } = scanCurrentLine(line);
+    assert.equal(result.status, 1);
+    assert.match(output, /shell-secret-variable-output fixture\.sh:1 category=unsafe-logging/);
+  });
+}
+
+const shellSecretOutputAllowances = [
+  { name: "TOKEN_COUNT through echo", line: ["echo", `"${shellVariable("TOKEN", "COUNT")}"`].join(" ") },
+  { name: "SECRET_COUNT through echo", line: ["echo", `"${shellVariable("SECRET", "COUNT")}"`].join(" ") },
+  {
+    name: "TOKEN_COUNT through printf",
+    line: ["printf", '"%s\\n"', `"${shellVariable("TOKEN", "COUNT")}"`].join(" "),
+  },
+];
+
+for (const { name, line } of shellSecretOutputAllowances) {
+  test(`current scan allows output of ${name}`, () => {
+    const { result, output } = scanCurrentLine(line);
+    assert.equal(result.status, 0, output);
+    assert.doesNotMatch(output, /shell-secret-variable-output/);
+  });
+}
+
+const shellGrepCountAllowances = [
+  { name: "--count", line: ["grep", "--count", "pattern", "file"].join(" ") },
+  { name: "-c", line: ["grep", "-c", "pattern", "file"].join(" ") },
+  { name: "the count-only combined -ic form", line: ["grep", "-ic", "pattern", "file"].join(" ") },
+  { name: "--files-with-matches", line: ["grep", "--files-with-matches", "pattern", "file"].join(" ") },
+  { name: "-l", line: ["grep", "-l", "pattern", "file"].join(" ") },
+  { name: "--quiet", line: ["grep", "--quiet", "pattern", "file"].join(" ") },
+  { name: "-q", line: ["grep", "-q", "pattern", "file"].join(" ") },
+];
+
+for (const { name, line } of shellGrepCountAllowances) {
+  test(`current scan allows grep ${name} without shell-grep-match-output`, () => {
+    const { result, output } = scanCurrentLine(line);
+    assert.equal(result.status, 0, output);
+    assert.doesNotMatch(output, /shell-grep-match-output/);
+  });
+}
+
+const shellGrepOutputFindings = [
+  { name: "ordinary matching output", line: ["grep", "pattern", "file"].join(" ") },
+  { name: "line-number matching output", line: ["grep", "-n", "pattern", "file"].join(" ") },
+];
+
+for (const { name, line } of shellGrepOutputFindings) {
+  test(`current scan reports grep ${name} as shell-grep-match-output`, () => {
+    const { result, output } = scanCurrentLine(line);
+    assert.equal(result.status, 1);
+    assert.match(output, /shell-grep-match-output fixture\.sh:1 category=unsafe-logging/);
+  });
+}
+
+const runtimeEnvironmentDumpFindings = [
+  {
+    name: "JSON serialization of os.environ",
+    line: ["print", "(", "json", ".dumps", "(", "os", ".environ", ")", ")"].join(""),
+  },
+  {
+    name: "JSON serialization of dict(os.environ)",
+    line: ["print", "(", "json", ".dumps", "(", "dict", "(", "os", ".environ", ")", ")", ")"].join(""),
+  },
+  {
+    name: "the existing direct Python environment dump",
+    line: ["print", "(", "dict", "(", "os", ".environ", ")", ")"].join(""),
+  },
+  {
+    name: "the existing JavaScript environment dump",
+    line: ["console.log", "process.env"].join("(") + ")",
+  },
+];
+
+for (const { name, line } of runtimeEnvironmentDumpFindings) {
+  test(`current scan reports ${name} as runtime-env-dump`, () => {
+    const { result, output } = scanCurrentLine(line);
+    assert.equal(result.status, 1);
+    assert.match(output, /runtime-env-dump fixture\.sh:1 category=unsafe-logging/);
+  });
+}
+
+const runtimeEnvironmentAccessAllowances = [
+  {
+    name: "a single Python HOME lookup",
+    line: ["print", "(", "os", ".environ", '["HOME"]', ")"].join(""),
+  },
+  {
+    name: "a single JavaScript PATH lookup",
+    line: ["console.log", "process.env", ".PATH"].join("(") + ")",
+  },
+];
+
+for (const { name, line } of runtimeEnvironmentAccessAllowances) {
+  test(`current scan allows ${name} without runtime-env-dump`, () => {
+    const { result, output } = scanCurrentLine(line);
+    assert.equal(result.status, 0, output);
+    assert.doesNotMatch(output, /runtime-env-dump/);
+  });
+}
 
 test("ignores unsafe logging examples in documentation but still scans documentation for secrets", () => {
   const target = makeTempRepo();

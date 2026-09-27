@@ -455,6 +455,42 @@ function matchesSensitiveUrlQuery(line) {
   return false;
 }
 
+function matchesShellSecretVariableOutput(line) {
+  if (!/^\s*(?:echo|printf)\b/i.test(line)) {
+    return false;
+  }
+
+  const sensitiveVariablePattern = /\$\{?([A-Za-z0-9_]*(?:API_KEY|PASSWORD|PASSWD|PRIVATE_KEY|SECRET|TOKEN)[A-Za-z0-9_]*)\}?/gi;
+  for (const match of line.matchAll(sensitiveVariablePattern)) {
+    // A terminal COUNT denotes metadata rather than the secret value itself.
+    if (!/(?:^|_)COUNT$/i.test(match[1])) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function matchesShellGrepMatchOutput(line) {
+  if (!/^\s*grep\s+/.test(line)) {
+    return false;
+  }
+
+  const hasNonPrintingLongOption = /(?:^|\s)--(?:files-with-matches|quiet)(?:[=\s]|$)/.test(line);
+  const hasNonPrintingShortOption = /(?:^|\s)-[A-Za-z]*[lq][A-Za-z]*(?:\s|$)/.test(line);
+  const hasCountOnlyLongOption = /^\s*grep\s+--count(?:\s|$)/.test(line);
+  // Only matching-mode flags are allowed beside -c; output-changing flags stay findings.
+  const hasCountOnlyShortOption = /^\s*grep\s+-[icvwxFEGP]*c[icvwxFEGP]*(?:\s|$)/.test(line);
+  return !hasNonPrintingLongOption && !hasNonPrintingShortOption &&
+    !hasCountOnlyLongOption && !hasCountOnlyShortOption;
+}
+
+function matchesRuntimeEnvDump(line) {
+  const javascriptDumpPattern = /\bconsole\.(?:error|log)\s*\(\s*(?:JSON\.stringify\s*\(\s*)?(?:Deno\.env|process\.env)\s*\)?\s*\)/;
+  const pythonDumpPattern = /\bprint\s*\(\s*(?:json\.dumps\s*\(\s*)?(?:dict\s*\(\s*)?os\.environ\s*\)?\s*\)?\s*\)/;
+  return javascriptDumpPattern.test(line) || pythonDumpPattern.test(line);
+}
+
 class UsageError extends Error {}
 class HelpRequested extends Error {}
 
@@ -573,15 +609,7 @@ const contentRules = [
     ruleId: "shell-grep-match-output",
     category: "unsafe-logging",
     history: false,
-    matches: (line) => {
-      if (!/^\s*grep\s+/.test(line)) {
-        return false;
-      }
-
-      const hasNonPrintingLongOption = /(?:^|\s)--(?:files-with-matches|quiet)(?:[=\s]|$)/.test(line);
-      const hasNonPrintingShortOption = /(?:^|\s)-[A-Za-z]*[lq][A-Za-z]*(?:\s|$)/.test(line);
-      return !hasNonPrintingLongOption && !hasNonPrintingShortOption;
-    },
+    matches: matchesShellGrepMatchOutput,
   },
   {
     ruleId: "shell-sensitive-file-dump",
@@ -593,13 +621,13 @@ const contentRules = [
     ruleId: "shell-secret-variable-output",
     category: "unsafe-logging",
     history: false,
-    pattern: /^\s*(?:echo|printf)\b[^#]*(?:\$\{?[A-Za-z0-9_]*(?:API_KEY|PASSWORD|PASSWD|PRIVATE_KEY|SECRET|TOKEN)[A-Za-z0-9_]*\}?)/i,
+    matches: matchesShellSecretVariableOutput,
   },
   {
     ruleId: "runtime-env-dump",
     category: "unsafe-logging",
     history: false,
-    pattern: /\b(?:console\.(?:error|log)\s*\(\s*(?:JSON\.stringify\s*\(\s*)?(?:Deno\.env|process\.env)|print\s*\(\s*(?:dict\s*\(\s*)?os\.environ)/,
+    matches: matchesRuntimeEnvDump,
   },
 ];
 
