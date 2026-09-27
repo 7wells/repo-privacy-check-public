@@ -15,6 +15,9 @@ const { runCli } = require("../scripts/privacy-check.js");
 const temporaryRepositories = new Set();
 const expectedGitIdentityKey = (suffix) => ["DEV_ENV_EXPECTED_GIT_USER", suffix].join("");
 const devEnvKey = (...segments) => ["DEV_ENV", ...segments].join("_");
+const credentialKey = (...segments) => segments.join("_");
+const quotedCredentialLine = (segments, value) => `${credentialKey(...segments)}="${value}"`;
+const gitConfigCommand = (...args) => ["git", "config", ...args].join(" ");
 const jsonDevEnvLine = (segments, value) => JSON.stringify({ [devEnvKey(...segments)]: value });
 const mixedDevEnvLine = (segments, literal, variable) =>
   `${devEnvKey(...segments)}=${literal}${["$", variable].join("")}`;
@@ -169,6 +172,132 @@ test("history allows the exact public expected Git identity defaults", () => {
   const result = runScanner(["--mode", "history", target]);
   assert.equal(result.status, 0);
 });
+
+const historyLiteralCredentialFixtures = [
+  {
+    name: "a quoted uppercase token value",
+    key: ["SERVICE", "TOKEN"],
+    value: ["synthetic", "secret", "value"].join("-"),
+  },
+  {
+    name: "a quoted lowercase token value",
+    key: ["service", "token"],
+    value: ["synthetic", "secret", "value"].join("-"),
+  },
+  { name: "a short quoted password", key: ["password"], value: ["s3cr", "3t"].join("") },
+  { name: "a quoted password containing parentheses", key: ["PASSWORD"], value: ["ab", "(cd)", "12"].join("") },
+];
+
+for (const { name, key, value } of historyLiteralCredentialFixtures) {
+  test(`history scan reports ${name} as literal-credential-assignment`, () => {
+    const target = makeTempRepo();
+    fs.writeFileSync(path.join(target, "fixture.sh"), `${quotedCredentialLine(key, value)}\n`);
+    commitAll(target, "Add one synthetic credential assignment");
+
+    const result = runScanner(["--mode", "history", target]);
+    assert.equal(result.status, 1, result.output);
+    assert.match(result.output, /literal-credential-assignment fixture\.sh:1 category=credential/);
+    assert.equal(result.output.includes(value), false);
+  });
+}
+
+const historyCredentialReferenceLines = [
+  {
+    name: "an uppercase constant on the right side",
+    line: `const ${credentialKey("SERVICE", "TOKEN")} = MAX_RETRIES`,
+  },
+  {
+    name: "another uppercase token reference",
+    line: `${credentialKey("SERVICE", "TOKEN")} = ${credentialKey("OTHER", "TOKEN")}`,
+  },
+  { name: "a mixed-case identifier reference", line: `${credentialKey("SERVICE", "TOKEN")} = retryLimit` },
+  { name: "a secret getter call", line: `${credentialKey("token")} = getSecret()` },
+  {
+    name: "a process environment reference",
+    line: `${credentialKey("token")} = process.env.${credentialKey("SERVICE", "TOKEN")}`,
+  },
+  { name: "a configuration property reference", line: `${credentialKey("token")} = config.token` },
+  { name: "a token placeholder", line: `${credentialKey("SERVICE", "TOKEN")} = placeholder` },
+  { name: "a quoted environment variable placeholder", line: `${credentialKey("SERVICE", "TOKEN")} = "${["$", "SERVICE_TOKEN"].join("")}"` },
+  { name: "a quoted secret template", line: `${credentialKey("SERVICE", "TOKEN")} = "${["${{", " secrets.", "SERVICE_TOKEN", " }}"].join("")}"` },
+  { name: "an empty quoted token", line: `${credentialKey("SERVICE", "TOKEN")} = ""` },
+  { name: "a boolean token value", line: `${credentialKey("SERVICE", "TOKEN")} = false` },
+  { name: "a null token value", line: `${credentialKey("SERVICE", "TOKEN")} = null` },
+];
+
+for (const { name, line } of historyCredentialReferenceLines) {
+  test(`history scan allows ${name} without a credential finding`, () => {
+    const target = makeTempRepo();
+    fs.writeFileSync(path.join(target, "fixture.sh"), `${line}\n`);
+    commitAll(target, "Add one non-literal credential reference");
+
+    const result = runScanner(["--mode", "history", target]);
+    assert.equal(result.status, 0, result.output);
+    assert.doesNotMatch(result.output, /literal-credential-assignment/);
+  });
+}
+
+const historySimilarCredentialKeyLines = [
+  { name: "a token count field", line: `${credentialKey("TOKEN", "COUNT")} = 12345678` },
+  { name: "a tokenized label field", line: `${credentialKey("SERVICE", "TOKENIZER")} = synthetic-secret-value` },
+  { name: "a token value suffix field", line: `${credentialKey("SERVICE", "TOKEN", "VALUE")} = synthetic-secret-value` },
+];
+
+for (const { name, line } of historySimilarCredentialKeyLines) {
+  test(`history scan allows ${name} without a credential finding`, () => {
+    const target = makeTempRepo();
+    fs.writeFileSync(path.join(target, "fixture.sh"), `${line}\n`);
+    commitAll(target, "Add one non-credential field");
+
+    const result = runScanner(["--mode", "history", target]);
+    assert.equal(result.status, 0, result.output);
+    assert.doesNotMatch(result.output, /literal-credential-assignment/);
+  });
+}
+
+const historyGitConfigSetterFixtures = [
+  {
+    name: "a replace-all email setter after the global option",
+    args: ["--global", "--replace-all", "user.email", ["person", "example.invalid"].join("@")],
+  },
+  {
+    name: "a replace-all name setter before the global option",
+    args: ["--replace-all", "--global", "user.name", ["Synthetic", "Person"].join(" ")],
+  },
+];
+
+for (const { name, args } of historyGitConfigSetterFixtures) {
+  test(`history scan reports ${name} as git-config-identity`, () => {
+    const target = makeTempRepo();
+    fs.writeFileSync(path.join(target, "fixture.sh"), `${gitConfigCommand(...args)}\n`);
+    commitAll(target, "Add one Git identity setter fixture");
+
+    const result = runScanner(["--mode", "history", target]);
+    assert.equal(result.status, 1, result.output);
+    assert.match(result.output, /git-config-identity fixture\.sh:1 category=git-identity/);
+  });
+}
+
+const historyGitConfigReadOnlyLines = [
+  { name: "an email getter with --get", args: ["--get", "user.email"] },
+  { name: "a global name getter with --get", args: ["--global", "--get", "user.name"] },
+  { name: "an email query without a value", args: ["user.email"] },
+  { name: "an email query redirected to a sink", args: ["user.email", ">/dev/null"] },
+  { name: "a replace-all option without a value", args: ["--global", "--replace-all", "user.email"] },
+  { name: "a setter using an environment placeholder", args: ["--global", "--replace-all", "user.email", ["$", "GIT_EMAIL"].join("")] },
+];
+
+for (const { name, args } of historyGitConfigReadOnlyLines) {
+  test(`history scan allows ${name} without a Git identity finding`, () => {
+    const target = makeTempRepo();
+    fs.writeFileSync(path.join(target, "fixture.sh"), `${gitConfigCommand(...args)}\n`);
+    commitAll(target, "Add one Git config read-only fixture");
+
+    const result = runScanner(["--mode", "history", target]);
+    assert.equal(result.status, 0, result.output);
+    assert.doesNotMatch(result.output, /git-config-identity/);
+  });
+}
 
 const devEnvPublicValueFixtures = [
   { name: "the MONKEY suffix", key: ["MONKEY"], value: "banana" },

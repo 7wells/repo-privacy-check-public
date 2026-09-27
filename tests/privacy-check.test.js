@@ -15,6 +15,9 @@ const { actionArgsFromEnvironment, runCli, testInternals } = require("../scripts
 const temporaryRepositories = new Set();
 const expectedGitIdentityKey = (suffix) => ["DEV_ENV_EXPECTED_GIT_USER", suffix].join("");
 const devEnvKey = (...segments) => ["DEV_ENV", ...segments].join("_");
+const credentialKey = (...segments) => segments.join("_");
+const quotedCredentialLine = (segments, value) => `${credentialKey(...segments)}="${value}"`;
+const gitConfigCommand = (...args) => ["git", "config", ...args].join(" ");
 const jsonDevEnvLine = (segments, value) => JSON.stringify({ [devEnvKey(...segments)]: value });
 const mixedDevEnvLine = (segments, literal, variable) =>
   `${devEnvKey(...segments)}=${literal}${["$", variable].join("")}`;
@@ -296,6 +299,84 @@ test("detects additional high-confidence credentials without printing values", (
   }
 });
 
+const literalCredentialFixtures = [
+  {
+    name: "a quoted uppercase token value",
+    key: ["SERVICE", "TOKEN"],
+    value: ["synthetic", "secret", "value"].join("-"),
+  },
+  {
+    name: "a quoted lowercase token value",
+    key: ["service", "token"],
+    value: ["synthetic", "secret", "value"].join("-"),
+  },
+  { name: "a short quoted password", key: ["password"], value: ["s3cr", "3t"].join("") },
+  { name: "a quoted password containing parentheses", key: ["PASSWORD"], value: ["ab", "(cd)", "12"].join("") },
+];
+
+for (const { name, key, value } of literalCredentialFixtures) {
+  test(`current scan reports ${name} as literal-credential-assignment`, () => {
+    const target = makeTempRepo();
+    fs.writeFileSync(path.join(target, "fixture.sh"), `${quotedCredentialLine(key, value)}\n`);
+
+    const result = runScanner([target]);
+    const output = combinedOutput(result);
+    assert.equal(result.status, 1);
+    assert.match(output, /literal-credential-assignment fixture\.sh:1 category=credential/);
+    assertRedacted(output, value);
+  });
+}
+
+const credentialReferenceLines = [
+  {
+    name: "an uppercase constant on the right side",
+    line: `const ${credentialKey("SERVICE", "TOKEN")} = MAX_RETRIES`,
+  },
+  {
+    name: "another uppercase token reference",
+    line: `${credentialKey("SERVICE", "TOKEN")} = ${credentialKey("OTHER", "TOKEN")}`,
+  },
+  { name: "a mixed-case identifier reference", line: `${credentialKey("SERVICE", "TOKEN")} = retryLimit` },
+  { name: "a secret getter call", line: `${credentialKey("token")} = getSecret()` },
+  {
+    name: "a process environment reference",
+    line: `${credentialKey("token")} = process.env.${credentialKey("SERVICE", "TOKEN")}`,
+  },
+  { name: "a configuration property reference", line: `${credentialKey("token")} = config.token` },
+  { name: "a token placeholder", line: `${credentialKey("SERVICE", "TOKEN")} = placeholder` },
+  { name: "a quoted environment variable placeholder", line: `${credentialKey("SERVICE", "TOKEN")} = "${["$", "SERVICE_TOKEN"].join("")}"` },
+  { name: "a quoted secret template", line: `${credentialKey("SERVICE", "TOKEN")} = "${["${{", " secrets.", "SERVICE_TOKEN", " }}"].join("")}"` },
+  { name: "an empty quoted token", line: `${credentialKey("SERVICE", "TOKEN")} = ""` },
+  { name: "a boolean token value", line: `${credentialKey("SERVICE", "TOKEN")} = false` },
+  { name: "a null token value", line: `${credentialKey("SERVICE", "TOKEN")} = null` },
+];
+
+for (const { name, line } of credentialReferenceLines) {
+  test(`current scan allows ${name}`, () => {
+    const target = makeTempRepo();
+    fs.writeFileSync(path.join(target, "fixture.sh"), `${line}\n`);
+
+    const result = runScanner([target]);
+    assert.equal(result.status, 0, combinedOutput(result));
+  });
+}
+
+const similarCredentialKeyLines = [
+  { name: "a token count field", line: `${credentialKey("TOKEN", "COUNT")} = 12345678` },
+  { name: "a tokenized label field", line: `${credentialKey("SERVICE", "TOKENIZER")} = synthetic-secret-value` },
+  { name: "a token value suffix field", line: `${credentialKey("SERVICE", "TOKEN", "VALUE")} = synthetic-secret-value` },
+];
+
+for (const { name, line } of similarCredentialKeyLines) {
+  test(`current scan allows ${name}`, () => {
+    const target = makeTempRepo();
+    fs.writeFileSync(path.join(target, "fixture.sh"), `${line}\n`);
+
+    const result = runScanner([target]);
+    assert.equal(result.status, 0, combinedOutput(result));
+  });
+}
+
 test("detects private network URLs and literal Git identities", () => {
   const target = makeTempRepo();
   const privateUrl = ["http:/", "192.168.10.20", "status"].join("/");
@@ -312,6 +393,51 @@ test("detects private network URLs and literal Git identities", () => {
   assertRedacted(output, privateUrl);
   assertRedacted(output, gitIdentity);
 });
+
+const gitConfigSetterFixtures = [
+  {
+    name: "a replace-all email setter after the global option",
+    args: ["--global", "--replace-all", "user.email", ["person", "example.invalid"].join("@")],
+    value: ["person", "example.invalid"].join("@"),
+  },
+  {
+    name: "a replace-all name setter before the global option",
+    args: ["--replace-all", "--global", "user.name", ["Synthetic", "Person"].join(" ")],
+    value: ["Synthetic", "Person"].join(" "),
+  },
+];
+
+for (const { name, args, value } of gitConfigSetterFixtures) {
+  test(`current scan reports ${name} as git-config-identity`, () => {
+    const target = makeTempRepo();
+    fs.writeFileSync(path.join(target, "fixture.sh"), `${gitConfigCommand(...args)}\n`);
+
+    const result = runScanner([target]);
+    const output = combinedOutput(result);
+    assert.equal(result.status, 1);
+    assert.match(output, /git-config-identity fixture\.sh:1 category=git-identity/);
+    assertRedacted(output, value);
+  });
+}
+
+const gitConfigReadOnlyLines = [
+  { name: "an email getter with --get", args: ["--get", "user.email"] },
+  { name: "a global name getter with --get", args: ["--global", "--get", "user.name"] },
+  { name: "an email query without a value", args: ["user.email"] },
+  { name: "an email query redirected to a sink", args: ["user.email", ">/dev/null"] },
+  { name: "a replace-all option without a value", args: ["--global", "--replace-all", "user.email"] },
+  { name: "a setter using an environment placeholder", args: ["--global", "--replace-all", "user.email", ["$", "GIT_EMAIL"].join("")] },
+];
+
+for (const { name, args } of gitConfigReadOnlyLines) {
+  test(`current scan allows ${name}`, () => {
+    const target = makeTempRepo();
+    fs.writeFileSync(path.join(target, "fixture.sh"), `${gitConfigCommand(...args)}\n`);
+
+    const result = runScanner([target]);
+    assert.equal(result.status, 0, combinedOutput(result));
+  });
+}
 
 test("allows loopback and localhost URLs", () => {
   const target = makeTempRepo();

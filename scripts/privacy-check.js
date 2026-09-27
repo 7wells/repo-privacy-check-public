@@ -84,8 +84,11 @@ const reviewedPublicDevEnvIdentityDefaults = Object.freeze({
   [["DEV_ENV_EXPECTED_GIT_USER", "_EMAIL"].join("")]: "65889763+7wells@users.noreply.github.com",
 });
 const genericWslProjectRootPattern = /^\/mnt\/[A-Za-z]\/src$/;
-const literalCredentialKeyPattern = /^(?:ACCESS_TOKEN|API_KEY|AUTH_TOKEN|AWS_SECRET_ACCESS_KEY|CLIENT_SECRET|CREDENTIALS?|DATABASE_URL|PASSWORD|PASSWD|PRIVATE_KEY|PRIVATE_TOKEN|REFRESH_TOKEN|SECRET|SECRET_KEY|TOKEN|[A-Z][A-Z0-9_]*(?:_ACCESS_TOKEN|_API_KEY|_AUTH_TOKEN|_CLIENT_SECRET|_PASSWORD|_PASSWD|_PRIVATE_KEY|_PRIVATE_TOKEN|_REFRESH_TOKEN|_SECRET|_SECRET_KEY|_TOKEN))$/;
+const literalCredentialKeyPattern = /^(?:ACCESS_TOKEN|API_KEY|AUTH_TOKEN|AWS_SECRET_ACCESS_KEY|CLIENT_SECRET|CREDENTIALS?|DATABASE_URL|PASSWORD|PASSWD|PRIVATE_KEY|PRIVATE_TOKEN|REFRESH_TOKEN|SECRET|SECRET_KEY|TOKEN|[A-Z][A-Z0-9_]*(?:_ACCESS_TOKEN|_API_KEY|_AUTH_TOKEN|_CLIENT_SECRET|_PASSWORD|_PASSWD|_PRIVATE_KEY|_PRIVATE_TOKEN|_REFRESH_TOKEN|_SECRET|_SECRET_KEY|_TOKEN))$/i;
 const indirectCredentialValuePattern = /^(?:\$|\{\{|<|example|sample|template|placeholder|changeme|your|process\.env|os\.environ|Deno\.env|import\.meta\.env|env\.|secrets?\.|config\.|vault\.)/i;
+// Quoting marks an explicit literal; bare identifiers and calls remain code references.
+const credentialCodeIdentifierPattern = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
+const credentialCodeCallPattern = /^[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*\([^;]*\)$/;
 
 function parseGenericHomeUserNames(buffer) {
   if (!Buffer.isBuffer(buffer) || buffer.length === 0 || buffer.length > MAX_GENERIC_HOME_USER_FILE_BYTES) {
@@ -136,20 +139,29 @@ function getGenericHomeUserNames() {
 }
 
 function matchesLiteralCredentialAssignment(line) {
-  const assignmentPattern = /\b([A-Z][A-Z0-9_]*)\b["']?\s*[:=]\s*["']?([^\s"'#]{8,})/g;
+  const assignmentPattern = /(^|[\s,{;])(?:([A-Za-z][A-Za-z0-9_]*)|["']([A-Za-z][A-Za-z0-9_]*)["'])\s*[:=]\s*(?:"([^"]*)"|'([^']*)'|([^\s"'#;]+))/g;
 
   for (const match of line.matchAll(assignmentPattern)) {
-    const key = match[1];
-    const value = match[2];
+    const key = match[2] ?? match[3];
+    const isQuoted = match[4] !== undefined || match[5] !== undefined;
+    const value = match[4] ?? match[5] ?? match[6];
     if (
       !literalCredentialKeyPattern.test(key) ||
+      !value ||
       placeholderValuePattern.test(value) ||
       indirectCredentialValuePattern.test(value)
     ) {
       continue;
     }
 
-    if (!/[()]/.test(value)) {
+    if (isQuoted) {
+      return true;
+    }
+    if (
+      value.length >= 8 &&
+      !credentialCodeIdentifierPattern.test(value) &&
+      !credentialCodeCallPattern.test(value)
+    ) {
       return true;
     }
   }
@@ -158,7 +170,7 @@ function matchesLiteralCredentialAssignment(line) {
 }
 
 function matchesGitConfigIdentity(line) {
-  const match = /\bgit\s+config(?:\s+--(?:global|local|system))?\s+user\.(?:name|email)\b(.*)$/i.exec(line);
+  const match = /\bgit\s+config\s+(?:(?:--(?:global|local|system|worktree|replace-all|add|fixed-value))\s+)*user\.(?:name|email)\b(.*)$/i.exec(line);
   if (!match) {
     return false;
   }
