@@ -1,6 +1,6 @@
-// File purpose: Validate home-directory path detection and the fail-closed generic-user allowlist.
-// Inputs: Synthetic path strings and temporary files.
-// Outputs: Node test assertions for accepted and rejected path forms.
+// File purpose: Validate private identities are not exposed through finding paths.
+// Inputs: Synthetic path strings and temporary Git repositories.
+// Outputs: Node assertions for path classification, Current/History output, and reports.
 // Security and privacy: Use only clearly synthetic usernames and paths in fixtures.
 
 const assert = require("node:assert/strict");
@@ -43,6 +43,57 @@ function commitReadme(target, content, message) {
     ],
     { cwd: target, stdio: "ignore" },
   );
+}
+
+function writeFindingFixture(target, relativePath) {
+  const filePath = path.join(target, relativePath);
+  const fixtureValue = ["ghp", "A".repeat(40)].join("_");
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, `${fixtureValue}\n`);
+  execFileSync("git", ["add", relativePath], { cwd: target, stdio: "ignore" });
+  execFileSync(
+    "git",
+    [
+      "-c",
+      "user.name=Example User",
+      "-c",
+      "user.email=example@example.invalid",
+      "commit",
+      "--quiet",
+      "-m",
+      "Add synthetic finding fixture",
+    ],
+    { cwd: target, stdio: "ignore" },
+  );
+  return fixtureValue;
+}
+
+function assertReportedFinding(mode, relativePath, expectedPath, privateIdentity = null) {
+  const target = makeTempRepo();
+  const fixtureValue = writeFindingFixture(target, relativePath);
+  const reportPath = path.join(target, ".git", "privacy-report.json");
+  const args = mode === "history" ? ["--mode", "history"] : [];
+  const result = runScanner([...args, "--report", reportPath, target]);
+  const reportText = fs.readFileSync(reportPath, "utf8");
+  const report = JSON.parse(reportText);
+  const finding = report.findings.find((entry) => entry.ruleId === "github-token");
+
+  assert.equal(result.status, 1);
+  assert.ok(result.output.includes(`github-token ${expectedPath}:1 category=token`));
+  assert.equal(result.output.includes(fixtureValue), false);
+  assert.ok(finding);
+  assert.equal(finding.file, expectedPath);
+  assert.equal(finding.ruleId, "github-token");
+  assert.equal(finding.line, 1);
+  assert.equal(finding.category, "token");
+  assert.equal(finding.source, mode);
+  assert.equal(report.mode, mode);
+  assert.equal(reportText.includes(fixtureValue), false);
+
+  if (privateIdentity) {
+    assert.equal(result.output.includes(privateIdentity), false);
+    assert.equal(reportText.includes(privateIdentity), false);
+  }
 }
 
 function runScanner(args) {
@@ -180,3 +231,53 @@ test("redacts non-generic home paths embedded in finding paths", () => {
   assert.equal(sanitizeFindingPath(sensitiveFindingPath), "[redacted-path]");
   assert.equal(sanitizeFindingPath(allowedFindingPath), allowedFindingPath);
 });
+
+test("redacts private hostname from current finding output and report", () => {
+  const relativePath = "workstation.internal/fixture.txt";
+
+  assertReportedFinding("current", relativePath, "[redacted-path]", "workstation.internal");
+});
+
+test("redacts private IPv4 address from current finding output and report", () => {
+  const privateAddress = ["192", "168", "24", "18"].join(".");
+  const relativePath = `fixtures/${privateAddress}/sample.txt`;
+
+  assertReportedFinding("current", relativePath, "[redacted-path]", privateAddress);
+});
+
+test("redacts private hostname from history finding output and report", () => {
+  const relativePath = "build-agent.lan/fixture.txt";
+
+  assertReportedFinding("history", relativePath, "[redacted-path]", "build-agent.lan");
+});
+
+test("redacts private IPv4 address from history finding output and report", () => {
+  const privateAddress = ["10", "42", "6", "9"].join(".");
+  const relativePath = `fixtures/${privateAddress}/sample.txt`;
+
+  assertReportedFinding("history", relativePath, "[redacted-path]", privateAddress);
+});
+
+for (const [address, description] of [
+  [["169", "254", "12", "7"].join("."), "IPv4 link-local address"],
+  ["fc00::1", "IPv6 unique-local address"],
+  ["fe80::1", "IPv6 link-local address"],
+  ["::ffff:c0a8:101", "IPv4-mapped IPv6 address"],
+]) {
+  test(`redacts ${description} using shared network classification`, () => {
+    assert.equal(sanitizeFindingPath(`fixtures/${address}/sample.txt`), "[redacted-path]");
+  });
+}
+
+for (const [relativePath, description] of [
+  ["docs/example.org/readme.md", "public hostname"],
+  [`fixtures/${["203", "0", "113", "10"].join(".")}/sample.txt`, "documentation IPv4 address"],
+  ["releases/1.2.3.4/notes.txt", "version-like path"],
+  [".gitconfig.local", "ordinary dotfile name"],
+]) {
+  for (const mode of ["current", "history"]) {
+    test(`preserves ${description} in ${mode} finding output and report`, () => {
+      assertReportedFinding(mode, relativePath, relativePath);
+    });
+  }
+}

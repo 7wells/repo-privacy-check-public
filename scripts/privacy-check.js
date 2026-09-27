@@ -381,6 +381,26 @@ function isPrivateNetworkHostname(rawHostname) {
   return /\.(?:internal|lan|local)$/i.test(hostname);
 }
 
+function containsPrivateNetworkPathIdentity(normalizedPath) {
+  const hostnames = normalizedPath.match(
+    /(?<![A-Za-z0-9.-])[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?\.(?:internal|lan|local)(?=$|[/.])/gi,
+  ) || [];
+  if (hostnames.some((hostname) => isPrivateNetworkHostname(hostname))) {
+    return true;
+  }
+
+  const ipv4Addresses = normalizedPath.match(/(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])/g) || [];
+  if (ipv4Addresses.some((address) => isPrivateNetworkHostname(address))) {
+    return true;
+  }
+
+  // Reuse the shared classifier so path redaction follows the URL rule's IPv6 policy.
+  const ipv6Addresses = normalizedPath.match(/[0-9a-f:.]{2,}/gi) || [];
+  return ipv6Addresses.some(
+    (address) => address.includes(":") && isPrivateNetworkHostname(address),
+  );
+}
+
 function matchesPrivateNetworkUrl(line) {
   const urlPattern = /\bhttps?:\/\/[^\s"'<>]+/gi;
 
@@ -764,7 +784,8 @@ function sanitizeFindingPath(filePath) {
     containsEmailAddress ||
     containsCredentialAssignment ||
     containsQueryValue ||
-    containsWindowsHomePath
+    containsWindowsHomePath ||
+    containsPrivateNetworkPathIdentity(normalized)
   ) {
     return "[redacted-path]";
   }
