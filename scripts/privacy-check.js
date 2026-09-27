@@ -75,7 +75,9 @@ const sensitiveUrlQueryKeyPattern = /^(?:access[_-]?token|address|api[_-]?key|au
 let genericHomeUserNamesCache = null;
 
 const placeholderValuePattern = /^(?:<|\$|example(?:\b|[ _-])|sample(?:\b|[ _-])|template(?:\b|[ _-])|placeholder(?:\b|[ _-])|changeme\b|your(?:\b|[ _-])|github-actions(?:\[bot\])?\b|false\b|true\b|null\b)/i;
-const sensitiveDevEnvKeyPattern = /(?:HOST|HOSTNAME|DOMAIN|IP|ADDRESS|USER|USERNAME|EMAIL|NAME|PATH|DIR|DIRECTORY|ROOT|HOME|URL|URI|ENDPOINT|TOKEN|SECRET|PASSWORD|PASSWD|KEY|CREDENTIAL)$/i;
+const sensitiveDevEnvKeyPattern = /(?:^|_)(?:DOMAIN|IP|ADDRESS|USER(?:NAME)?|EMAIL|TOKEN|SECRET|PASSWORD|PASSWD|KEY|CREDENTIALS?)$/i;
+const sensitiveDevEnvHostKeyPattern = /(?:^|_)(?:HOST|HOSTNAME)$/i;
+const personalDevEnvNameKeyPattern = /(?:^|_)(?:USER(?:NAME)?|ACCOUNT|PERSON|OWNER|LOGIN|IDENTITY)(?:_[A-Z0-9]+)*_NAME$/i;
 // Exempt only the exact public repository defaults; changed values stay subject to local-value checks.
 const reviewedPublicDevEnvIdentityDefaults = Object.freeze({
   [["DEV_ENV_EXPECTED_GIT_USER", "_NAME"].join("")]: "7wells",
@@ -225,12 +227,17 @@ function matchesDevEnvLocalValue(line) {
       continue;
     }
 
+    const isLoopbackHostPlaceholder = value === "127.0.0.1" && sensitiveDevEnvHostKeyPattern.test(key);
+    const isPrivateIpv4 = /^(?:(?:10|127)\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})$/.test(value);
     const looksLikeLocalValue =
-      sensitiveDevEnvKeyPattern.test(key) ||
+      (sensitiveDevEnvKeyPattern.test(key) && !isLoopbackHostPlaceholder) ||
+      (sensitiveDevEnvHostKeyPattern.test(key) && !isLoopbackHostPlaceholder) ||
+      personalDevEnvNameKeyPattern.test(key) ||
       /^(?:\/|~\/|[A-Za-z]:\\)/.test(value) ||
       /@/.test(value) ||
-      /^(?:(?:10|127)\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})$/.test(value) ||
-      /\.(?:internal|lan|local)(?::\d+)?(?:\/|$)/i.test(value);
+      (isPrivateIpv4 && !isLoopbackHostPlaceholder) ||
+      /\.(?:internal|lan|local)(?::\d+)?(?:\/|$)/i.test(value) ||
+      isPrivateDevEnvUrl(value);
 
     if (looksLikeLocalValue) {
       return true;
@@ -238,6 +245,25 @@ function matchesDevEnvLocalValue(line) {
   }
 
   return false;
+}
+
+function isPrivateDevEnvUrl(value) {
+  if (!/^https?:\/\//i.test(value)) {
+    return false;
+  }
+
+  try {
+    const hostname = new URL(value).hostname.toLowerCase().replace(/^\[|\]$/g, "");
+    const ipv4 = parseIpv4Address(hostname);
+    return (
+      isPrivateNetworkHostname(hostname) ||
+      hostname === "localhost" ||
+      hostname.endsWith(".localhost") ||
+      ipv4?.[0] === 127
+    );
+  } catch {
+    return false;
+  }
 }
 
 function matchesHomeDirectoryPath(line) {

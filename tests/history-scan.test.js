@@ -14,6 +14,7 @@ const { runCli } = require("../scripts/privacy-check.js");
 
 const temporaryRepositories = new Set();
 const expectedGitIdentityKey = (suffix) => ["DEV_ENV_EXPECTED_GIT_USER", suffix].join("");
+const devEnvKey = (...segments) => ["DEV_ENV", ...segments].join("_");
 
 function makeTempRepo() {
   const target = fs.mkdtempSync(path.join(os.tmpdir(), "repo-privacy-history-"));
@@ -162,6 +163,61 @@ test("history allows the exact public expected Git identity defaults", () => {
 
   const result = runScanner(["--mode", "history", target]);
   assert.equal(result.status, 0);
+});
+
+const devEnvPublicValueFixtures = [
+  { name: "the MONKEY suffix", key: ["MONKEY"], value: "banana" },
+  { name: "the SKIP suffix", key: ["SKIP"], value: "always" },
+  { name: "a package name", key: ["PACKAGE", "NAME"], value: "widget" },
+  { name: "an include directory", key: ["INCLUDE", "DIR"], value: "include" },
+  { name: "a public base URL", key: ["BASE", "URL"], value: "https://example.org" },
+  { name: "the loopback host placeholder", key: ["HOST"], value: "127.0.0.1" },
+  { name: "another public name field", key: ["MODULE", "NAME"], value: "widget" },
+  { name: "another relative directory field", key: ["DOCS", "DIR"], value: "docs" },
+  { name: "another public URL field", key: ["PUBLIC", "URL"], value: "https://example.org" },
+];
+
+for (const { name, key, value } of devEnvPublicValueFixtures) {
+  test(`history scan allows ${name} in a DEV_ENV assignment`, () => {
+    const target = makeTempRepo();
+    fs.writeFileSync(path.join(target, "fixture.sh"), `${devEnvKey(...key)}=${value}\n`);
+    commitAll(target, "Add a public DEV_ENV value fixture");
+
+    const result = runScanner(["--mode", "history", target]);
+    assert.equal(result.status, 0, result.output);
+  });
+}
+
+const devEnvPrivateValueFixtures = [
+  { name: "a private hostname", key: ["HOST"], value: ["workstation", ".lan"].join("") },
+  { name: "a private IPv4 address", key: ["HOST"], value: ["192.168", "1.42"].join(".") },
+  { name: "a loopback IPv4 value under another key", key: ["SERVICE"], value: "127.0.0.1" },
+  { name: "a personal name", key: ["USER", "NAME"], value: ["private", "person"].join("-") },
+  { name: "a personal email address", key: ["USER", "EMAIL"], value: ["person", "example.invalid"].join("@") },
+  { name: "a local home path", key: ["PROJECT", "DIR"], value: ["", "home", "private-user", "work"].join("/") },
+  { name: "a private URL", key: ["BASE", "URL"], value: ["https://service", ".internal/private"].join("") },
+];
+
+for (const { name, key, value } of devEnvPrivateValueFixtures) {
+  test(`history scan reports ${name} as dev-env-local-value`, () => {
+    const target = makeTempRepo();
+    fs.writeFileSync(path.join(target, "fixture.sh"), `${devEnvKey(...key)}=${value}\n`);
+    commitAll(target, "Add one private DEV_ENV value fixture");
+
+    const result = runScanner(["--mode", "history", target]);
+    assert.equal(result.status, 1);
+    assert.match(result.output, /dev-env-local-value fixture\.sh:1 category=local-env/);
+    assert.equal(result.output.includes(value), false);
+  });
+}
+
+test("history scan leaves a plain loopback HOST assignment outside this DEV_ENV rule", () => {
+  const target = makeTempRepo();
+  fs.writeFileSync(path.join(target, "fixture.sh"), "HOST=127.0.0.1\n");
+  commitAll(target, "Add a plain loopback host fixture");
+
+  const result = runScanner(["--mode", "history", target]);
+  assert.equal(result.status, 0, result.output);
 });
 
 const nonExactPublicIdentityAssignments = [
