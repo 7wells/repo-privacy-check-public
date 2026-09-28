@@ -32,7 +32,7 @@ The action inputs are:
 | Input | Default | Purpose |
 | --- | --- | --- |
 | `target-path` | `.` | Repository or directory to scan |
-| `scan-mode` | `current` | Scan the current tree or all commits reachable from the checked-out `HEAD` (`history`) |
+| `scan-mode` | `current` | Scan the working tree (`current`), staged Git index (`index`), or commits reachable from `HEAD` (`history`) |
 | `include-ignored` | `false` | Include generated, dependency, cache, and Git-ignored paths |
 | `history-attestations` | empty | Strict JSON attestations for exact reviewed historical findings; valid only with `history` |
 | `report-path` | empty | Write a minimal redacted JSON report; review it before publishing |
@@ -96,6 +96,8 @@ The scanner focuses on high-confidence privacy and secret risks:
 Unsafe-logging rules apply to executable and configuration content in the current tree. History scans retain rules for persistent secrets, credentials, private paths, and private URLs without forcing rewrites for obsolete behavioral patterns.
 
 In Git repositories, current mode scans tracked files plus untracked files that are not excluded by standard Git ignore rules. Tracked files remain in scope even when a later ignore rule matches their path. Non-Git directories retain the regular filesystem walk. Use `include-ignored` only for deliberate audits of local generated or ignored content.
+
+Run `node scripts/privacy-check.js --mode index .` locally before committing to check the staged snapshot. Index mode reads staged paths and Git objects, including explicitly staged ignored files; it does not read unstaged working-tree changes, untracked files, or `git add -N` placeholders. It requires a Git worktree root and a resolved index, and works before the first commit. Use current mode as well when reviewing unstaged changes. The reusable workflow keeps current and history scans: a hosted checkout cannot see a developer's local staging area.
 
 Findings contain only a rule ID, sanitized relative path, optional line number, category, and source mode. Matched content is never printed. JSON reports use the same redacted data, use mode `0600` where supported, and refuse existing symbolic-link targets.
 

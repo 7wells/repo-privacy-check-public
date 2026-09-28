@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 
-// File purpose: Detect high-confidence privacy and secret risks in current trees and Git history.
+// File purpose: Detect high-confidence privacy and secret risks in working trees, Git indexes, and history.
 // Inputs: CLI arguments or GitHub Action inputs plus files and Git objects under the target path.
 // Outputs: Metadata-only console findings and an optional redacted JSON report.
 // Side effects: Writes a report only when an explicit report path is provided.
 // Security and privacy: Never expose matched values, snippets, environment values, or full local paths.
-// Maintenance invariants: Preserve separate current/history modes and keep output redaction test-covered.
+// Maintenance invariants: Preserve separate current/index/history modes and keep output redaction test-covered.
 
 const fs = require("fs");
 const path = require("path");
@@ -733,8 +733,8 @@ function parseArgs(argv) {
     options.targetPath = arg;
   }
 
-  if (!["current", "history"].includes(options.mode)) {
-    failUsage("Mode must be 'current' or 'history'.");
+  if (!["current", "index", "history"].includes(options.mode)) {
+    failUsage("Mode must be 'current', 'index', or 'history'.");
   }
   if (options.historyAttestationsPath && options.mode !== "history") {
     failUsage("History attestations require history mode.");
@@ -751,7 +751,7 @@ function parseArgs(argv) {
 }
 
 function printHelp() {
-  return "Usage: privacy-check [--mode current|history] [--include-ignored] [--report path] [--history-attestations path] [target-path]";
+  return "Usage: privacy-check [--mode current|index|history] [--include-ignored] [--report path] [--history-attestations path] [target-path]";
 }
 
 function failUsage(message) {
@@ -1207,7 +1207,7 @@ function listCommitEntries(targetPath, commit) {
   return entries;
 }
 
-function readHistoryBlob(targetPath, object) {
+function readGitBlob(targetPath, object) {
   try {
     return classifyTextBuffer(git(targetPath, ["cat-file", "blob", object], "buffer"));
   } catch {
@@ -1222,6 +1222,105 @@ function direntLike(filePath) {
     isFile: () => true,
     isSymbolicLink: () => false,
   };
+}
+
+function gitPathSet(targetPath, args) {
+  return new Set(
+    git(targetPath, args, "buffer").toString("utf8").split("\0").filter(Boolean).map(normalizeGitPath),
+  );
+}
+
+function listIndexEntries(targetPath) {
+  try {
+    const worktreeRoot = git(targetPath, ["rev-parse", "--show-toplevel"]).trim();
+    if (fs.realpathSync(targetPath) !== fs.realpathSync(worktreeRoot)) {
+      failUsage("Index mode requires the Git worktree root.");
+    }
+
+    // Intent-to-add entries appear in ls-files but are absent from a commit tree.
+    const stagedAdditions = gitPathSet(targetPath, ["diff", "--cached", "--name-only", "--diff-filter=A", "--no-renames", "-z", "--"]);
+    let committedPaths = new Set();
+    let hasHead = false;
+    try {
+      git(targetPath, ["rev-parse", "--verify", "HEAD"]);
+      hasHead = true;
+    } catch {
+      // An unborn HEAD has no committed paths; the staged additions still form the snapshot.
+    }
+    if (hasHead) {
+      committedPaths = gitPathSet(targetPath, ["ls-tree", "-r", "-z", "--name-only", "--full-tree", "HEAD"]);
+    }
+
+    const output = git(targetPath, ["ls-files", "--stage", "-z", "--full-name", "--"], "buffer");
+    const entries = [];
+    let offset = 0;
+    while (offset < output.length) {
+      const end = output.indexOf(0, offset);
+      if (end < 0) {
+        failUsage("Index mode requires a readable Git index.");
+      }
+      const record = output.subarray(offset, end);
+      const separator = record.indexOf(9);
+      const metadata = record.subarray(0, separator).toString("ascii");
+      const pathBytes = record.subarray(separator + 1);
+      const match = /^(100644|100755|120000|160000) ([0-9a-f]{40}|[0-9a-f]{64}) ([0-3])$/.exec(metadata);
+      if (separator < 0 || !match || pathBytes.length === 0) {
+        failUsage("Index mode requires a readable Git index.");
+      }
+      if (match[3] !== "0") {
+        failUsage("Index mode requires a fully resolved Git index.");
+      }
+      const filePath = pathBytes.toString("utf8");
+      if (!Buffer.from(filePath, "utf8").equals(pathBytes)) {
+        failUsage("Index mode requires readable Git paths.");
+      }
+      const relativePath = normalizeGitPath(filePath);
+      if (committedPaths.has(relativePath) || stagedAdditions.has(relativePath)) {
+        entries.push({ mode: match[1], object: match[2], filePath: relativePath });
+      }
+      offset = end + 1;
+    }
+    return entries;
+  } catch (error) {
+    if (error instanceof UsageError) {
+      throw error;
+    }
+    failUsage("Index mode requires a readable Git repository and index.");
+  }
+}
+
+function scanIndex(targetPath) {
+  const entries = listIndexEntries(targetPath);
+  const findings = [];
+
+  for (const entry of entries) {
+    const relativePath = entry.filePath;
+    const pathParts = relativePath.split("/");
+    const codexPathIndex = pathParts.indexOf(".codex");
+    const isCodexDirectoryPath = codexPathIndex >= 0 && codexPathIndex < pathParts.length - 1;
+    const dirent = {
+      name: path.basename(relativePath),
+      isDirectory: () => entry.mode === "160000",
+      isFile: () => entry.mode === "100644" || entry.mode === "100755",
+      isSymbolicLink: () => entry.mode === "120000",
+    };
+    checkPathRules(findings, relativePath, dirent, "index");
+
+    if (isCodexDirectoryPath || entry.mode === "160000") {
+      continue;
+    }
+
+    const result = readGitBlob(targetPath, entry.object);
+    if (result.kind === "text") {
+      checkContentRules(findings, relativePath, result.content, "index");
+    } else if (result.kind === "error") {
+      addFinding(findings, "unreadable-index-file", relativePath, null, "scan-error", "index");
+    } else if (result.kind === "too-large") {
+      addFinding(findings, "oversized-text-file", relativePath, null, "scan-error", "index");
+    }
+  }
+
+  return findings;
 }
 
 function createHistoryFindingId(ruleId, relativePath, lineNumber, lineContent) {
@@ -1345,7 +1444,7 @@ function scanHistory(targetPath, includeIgnored, attestations, attestationsPath)
         const blobPathKey = `${entry.object}\0${relativePath}`;
         if (!seenBlobPaths.has(blobPathKey)) {
           seenBlobPaths.add(blobPathKey);
-          const result = readHistoryBlob(targetPath, entry.object);
+          const result = readGitBlob(targetPath, entry.object);
           if (result.kind === "text") {
             blobContent = result.content;
             checkContentRules(findings, relativePath, result.content, "history");
@@ -1518,7 +1617,9 @@ function runCli(argv, io = {}) {
             attestations,
             options.historyAttestationsPath,
           )
-        : walkCurrentTree(options.targetPath, options.includeIgnored);
+        : options.mode === "index"
+          ? scanIndex(options.targetPath)
+          : walkCurrentTree(options.targetPath, options.includeIgnored);
 
     writeReport(options.reportPath, findings, options.mode);
 
