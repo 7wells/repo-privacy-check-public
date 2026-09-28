@@ -346,7 +346,7 @@ test("index rejects unmerged conflict stages without a report", () => {
   git(fixture.repo, "switch", "--quiet", mainBranch);
   write(fixture.repo, "fixture.txt", `${token("B")}\n`);
   commitAll(fixture.repo, "Add another synthetic version");
-  assert.throws(() => git(fixture.repo, "merge", "--no-edit", "topic"));
+  assert.throws(() => git(fixture.repo, "-c", "user.name=Example User", "-c", "user.email=example@example.invalid", "merge", "--no-edit", "topic"));
   assert.match(git(fixture.repo, "ls-files", "--stage", "fixture.txt"), /\s[123]\t/);
   const result = scan(fixture, "index");
   assert.equal(result.status, 2);
