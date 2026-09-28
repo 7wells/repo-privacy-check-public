@@ -145,6 +145,14 @@ function matchesLiteralCredentialAssignment(line) {
     const key = match[2] ?? match[3];
     const isQuoted = match[4] !== undefined || match[5] !== undefined;
     const value = match[4] ?? match[5] ?? match[6];
+    // ${NAME:-fallback} reads a default; ${NAME:=value} still assigns one.
+    if (
+      match[1] === "{" &&
+      line[match.index - 1] === "$" &&
+      line.startsWith(":-", match.index + 1 + key.length)
+    ) {
+      continue;
+    }
     if (
       !literalCredentialKeyPattern.test(key) ||
       !value ||
@@ -475,7 +483,169 @@ function matchesSensitiveUrlQuery(line) {
   return false;
 }
 
-function matchesShellSecretVariableOutput(line) {
+// Only suppress clear stdout file redirects. Ambiguous shell syntax stays a finding.
+function isShellOutputDevice(target) {
+  const normalized = target.startsWith("/") ? path.posix.normalize(target) : target;
+  return /^\/(?:dev\/(?:std(?:in|out|err)|tty[^/]*|console|kmsg|log|pts\/[0-9]+|fd\/[0-9]+)|proc\/(?:self|\$\$|[0-9]+)\/fd\/[0-9]+)$/.test(normalized);
+}
+
+function shellStdoutRedirectState(line, fileTargets = new Set()) {
+  if (/\$\(|`/.test(line)) {
+    return "unknown";
+  }
+
+  let command = line.replace(/\s+\|\|\s*true\s*$/, "");
+  const redirects = [];
+  let quote = null;
+  let escaped = false;
+
+  for (let index = 0; index < command.length; index += 1) {
+    const character = command[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (character === "\\" && quote !== "'") {
+      escaped = true;
+      continue;
+    }
+    if (quote !== null) {
+      if (character === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (character === "'" || character === '"') {
+      quote = character;
+    } else if (character === "#" && (index === 0 || /\s/.test(command[index - 1]))) {
+      command = command.slice(0, index).trimEnd();
+      break;
+    } else if (character === ">") {
+      redirects.push(index);
+    } else if (/[;|&<>]/.test(character)) {
+      return "unknown";
+    }
+  }
+
+  if (quote !== null || escaped) {
+    return "unknown";
+  }
+  if (redirects.length === 0) {
+    return "none";
+  }
+  if (redirects.length > 2 || (redirects.length === 2 && redirects[1] !== redirects[0] + 1)) {
+    return "unknown";
+  }
+
+  const redirectIndex = redirects[0];
+  const ioNumber = /(?:^|\s)(\d+)$/.exec(command.slice(0, redirectIndex));
+  if (ioNumber && ioNumber[1] !== "1") {
+    return "unknown";
+  }
+  const target = command.slice(redirects[redirects.length - 1] + 1).trim();
+  if (target.startsWith("&")) {
+    return "stdio";
+  }
+  if (!/^(?:"[^"\n]+"|'[^'\n]+'|[^\s;|&<>]+)$/.test(target)) {
+    return "unknown";
+  }
+
+  const unquotedTarget = target.replace(/^(?:"([^"]+)"|'([^']+)')$/, (_, doubleQuoted, singleQuoted) =>
+    doubleQuoted ?? singleQuoted);
+  if (isShellOutputDevice(unquotedTarget)) {
+    return "stdio";
+  }
+  const targetVariable = /^(?:\$([A-Za-z_][A-Za-z0-9_]*)|\$\{([A-Za-z_][A-Za-z0-9_]*)\})$/u.exec(unquotedTarget);
+  if (targetVariable && !fileTargets.has(targetVariable[1] ?? targetVariable[2])) {
+    return "unknown";
+  }
+  return "file";
+}
+
+function shellRedirectStates(lines) {
+  const knownFileTargets = new Set();
+  const states = [];
+  let conditionalDepth = 0;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (/^(?:fi|esac|done)\b/.test(trimmed)) {
+      conditionalDepth = Math.max(0, conditionalDepth - 1);
+    }
+    states.push(shellStdoutRedirectState(line, knownFileTargets));
+    if (/^(?:if|case|for|while|until)\b/.test(trimmed)) {
+      conditionalDepth += 1;
+    }
+    const assignment = /^\s*([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(line);
+    if (!assignment) {
+      if (/^\s*(?:read|source|eval|unset|export|declare|local|typeset|readonly)\b/.test(line) || /^\s*\.\s+/.test(line) || /^\s*printf\s+.*(?:^|\s)-v(?:\s|$)/.test(line)) {
+        knownFileTargets.clear();
+      }
+      continue;
+    }
+    const [, name, rightHandSide] = assignment;
+    knownFileTargets.delete(name);
+    if (conditionalDepth > 0) {
+      continue;
+    }
+    const value = rightHandSide.trim().replace(/^(?:"([^"]*)"|'([^']*)')$/, (_, doubleQuoted, singleQuoted) =>
+      doubleQuoted ?? singleQuoted);
+    const literalFilePath = /^\/[^\s]+$/.test(value) && !isShellOutputDevice(value);
+    const constructedFilePath = /^\$(?:\{[A-Za-z_][A-Za-z0-9_]*\}|[A-Za-z_][A-Za-z0-9_]*)(?:[/.][A-Za-z0-9_.-]+)+(?:\.\$\$)?$/.test(value);
+    if (literalFilePath || constructedFilePath) {
+      knownFileTargets.add(name);
+    }
+  }
+  return states;
+}
+
+function redirectedShellBraceLines(lines, redirectStates) {
+  if (!/^#!.*\b(?:sh|bash|dash|ash|zsh)\b/.test(lines[0] ?? "")) {
+    return new Set();
+  }
+
+  const redirectedLines = new Set();
+  const stack = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const trimmed = lines[index].trim();
+    if (trimmed === "{") {
+      if (stack.length > 0) {
+        stack[stack.length - 1].nested = true;
+      }
+      stack.push({ start: index, nested: false });
+      continue;
+    }
+    if (!trimmed.startsWith("}") || stack.length === 0) {
+      continue;
+    }
+
+    const group = stack.pop();
+    if (group.nested || redirectStates[index] !== "file") {
+      continue;
+    }
+    let hasPrint = false;
+    let onlySimplePrints = true;
+    for (let bodyIndex = group.start + 1; bodyIndex < index; bodyIndex += 1) {
+      const line = lines[bodyIndex];
+      if (!line.trim() || /^\s*#/.test(line)) {
+        continue;
+      }
+      hasPrint = true;
+      if (!/^\s*printf\b/.test(line) || redirectStates[bodyIndex] !== "none") {
+        onlySimplePrints = false;
+        break;
+      }
+    }
+    if (!hasPrint || !onlySimplePrints) {
+      continue;
+    }
+    for (let bodyIndex = group.start + 1; bodyIndex < index; bodyIndex += 1) {
+      redirectedLines.add(bodyIndex);
+    }
+  }
+  return redirectedLines;
+}
+
+function matchesShellSecretVariableOutput(line, context = {}) {
   if (!/^\s*(?:echo|printf)\b/i.test(line)) {
     return false;
   }
@@ -484,14 +654,17 @@ function matchesShellSecretVariableOutput(line) {
   for (const match of line.matchAll(sensitiveVariablePattern)) {
     // A terminal COUNT denotes metadata rather than the secret value itself.
     if (!/(?:^|_)COUNT$/i.test(match[1])) {
-      return true;
+      const destination = context.stdoutRedirectState ?? shellStdoutRedirectState(line);
+      return destination !== "file" && !(
+        context.stdoutRedirectedByGroup && destination === "none"
+      );
     }
   }
 
   return false;
 }
 
-function matchesShellGrepMatchOutput(line) {
+function matchesShellGrepMatchOutput(line, context = {}) {
   if (!/^\s*grep\s+/.test(line)) {
     return false;
   }
@@ -502,7 +675,8 @@ function matchesShellGrepMatchOutput(line) {
   // Only matching-mode flags are allowed beside -c; output-changing flags stay findings.
   const hasCountOnlyShortOption = /^\s*grep\s+-[icvwxFEGP]*c[icvwxFEGP]*(?:\s|$)/.test(line);
   return !hasNonPrintingLongOption && !hasNonPrintingShortOption &&
-    !hasCountOnlyLongOption && !hasCountOnlyShortOption;
+    !hasCountOnlyLongOption && !hasCountOnlyShortOption &&
+    (context.stdoutRedirectState ?? shellStdoutRedirectState(line)) !== "file";
 }
 
 function matchesRuntimeEnvDump(line) {
@@ -931,6 +1105,8 @@ function checkContentRules(findings, relativePath, content, source) {
   const lines = content.split(/\r?\n/);
   const isDocumentationFile = documentationFilePattern.test(relativePath);
   const isGitConfigFile = gitConfigFilePattern.test(relativePath);
+  const redirectStates = source === "history" ? [] : shellRedirectStates(lines);
+  const redirectedShellLines = source === "history" ? new Set() : redirectedShellBraceLines(lines, redirectStates);
   let isGitUserSection = false;
 
   for (let index = 0; index < lines.length; index += 1) {
@@ -952,7 +1128,10 @@ function checkContentRules(findings, relativePath, content, source) {
         continue;
       }
 
-      if (rule.pattern?.test(lines[index]) || rule.matches?.(lines[index])) {
+      if (rule.pattern?.test(lines[index]) || rule.matches?.(lines[index], {
+        stdoutRedirectedByGroup: redirectedShellLines.has(index),
+        stdoutRedirectState: redirectStates[index],
+      })) {
         addFinding(findings, rule.ruleId, relativePath, index + 1, rule.category, source);
       }
     }

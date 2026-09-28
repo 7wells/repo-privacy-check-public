@@ -66,6 +66,13 @@ function scanCurrentLine(line) {
   return { result, output: combinedOutput(result) };
 }
 
+function scanCurrentShell(content) {
+  const target = makeTempRepo();
+  fs.writeFileSync(path.join(target, "fixture.sh"), `#!/bin/sh\n${content}\n`);
+  const result = runScanner([target]);
+  return { result, output: combinedOutput(result) };
+}
+
 const shellVariable = (...segments) => ["$", segments.join("_")].join("");
 const shellBracedVariable = (...segments) => ["${", segments.join("_"), "}"].join("");
 
@@ -971,6 +978,97 @@ for (const { name, line } of shellGrepOutputFindings) {
     assert.match(output, /shell-grep-match-output fixture\.sh:1 category=unsafe-logging/);
   });
 }
+
+test("current scan distinguishes redirected grep matches from visible output", () => {
+  const redirected = scanCurrentShell(['CRON_TMP="/tmp/privacy-grep-output"', 'grep -Fv "$SCRIPT" "$SOURCE" > "$CRON_TMP" || true'].join("\n"));
+  const visible = scanCurrentShell('grep -Fv "$SCRIPT" "$SOURCE"');
+  const stdoutAlias = scanCurrentShell('grep -Fv "$SCRIPT" "$SOURCE" > /dev/stdout');
+  const stderrOnly = scanCurrentShell('grep -Fv "$SCRIPT" "$SOURCE" 2> "$ERROR_FILE"');
+  const dynamicStdout = scanCurrentShell(['CRON_TMP=/dev/stdout', 'grep -Fv "$SCRIPT" "$SOURCE" > "$CRON_TMP"'].join("\n"));
+  const pipeline = scanCurrentShell('grep -Fv "$SCRIPT" "$SOURCE" > "$CRON_TMP" | tee "$LOG_FILE"');
+  const commentedRedirect = scanCurrentShell('grep -Fv "$SCRIPT" "$SOURCE" # > /tmp/example-output');
+  const stderrDescriptor = scanCurrentShell('grep -Fv "$SCRIPT" "$SOURCE" 2> /tmp/example-error');
+  const extraDescriptor = scanCurrentShell('grep -Fv "$SCRIPT" "$SOURCE" 3> /tmp/example-output');
+  const annotatedRedirect = scanCurrentShell('grep -Fv "$SCRIPT" "$SOURCE" > /tmp/example-output # reviewed file output');
+
+  assert.doesNotMatch(redirected.output, /shell-grep-match-output/);
+  assert.doesNotMatch(annotatedRedirect.output, /shell-grep-match-output/);
+  for (const result of [visible, stdoutAlias, stderrOnly, pipeline, commentedRedirect, stderrDescriptor, extraDescriptor]) {
+    assert.match(result.output, /shell-grep-match-output fixture\.sh:2 category=unsafe-logging/);
+  }
+  assert.match(dynamicStdout.output, /shell-grep-match-output fixture\.sh:3 category=unsafe-logging/);
+});
+
+test("current scan distinguishes redirected secret printf from terminal output", () => {
+  const redirected = scanCurrentShell(['PASSWORD_FILE="/tmp/privacy-output"', 'printf "%s\\n" "$SERVICE_PASSWORD" > "$PASSWORD_FILE"'].join("\n"));
+  const visible = scanCurrentShell('printf "%s\\n" "$SERVICE_PASSWORD"');
+  const stderr = scanCurrentShell('printf "%s\\n" "$SERVICE_PASSWORD" >&2');
+  const stdoutAlias = scanCurrentShell('printf "%s\\n" "$SERVICE_PASSWORD" > /dev/stdout');
+  const dynamicStdout = scanCurrentShell(['PASSWORD_FILE=/dev/stdout', 'printf "%s\\n" "$SERVICE_PASSWORD" > "$PASSWORD_FILE"'].join("\n"));
+  const extraFileDescriptor = scanCurrentShell('printf "%s\\n" "$SERVICE_PASSWORD" > /dev/fd/3');
+  const stderrOnly = scanCurrentShell('printf "%s\\n" "$SERVICE_PASSWORD" 2> "$ERROR_FILE"');
+  const unknownTarget = scanCurrentShell('printf "%s\\n" "$SERVICE_PASSWORD" > "$PASSWORD_FILE"');
+  const conditionalTarget = scanCurrentShell([
+    'PASSWORD_FILE=/dev/stdout',
+    'if false; then',
+    '  PASSWORD_FILE=/tmp/privacy-output',
+    'fi',
+    'printf "%s\\n" "$SERVICE_PASSWORD" > "$PASSWORD_FILE"',
+  ].join("\n"));
+  const overwrittenByRead = scanCurrentShell([
+    'PASSWORD_FILE=/tmp/privacy-output',
+    'read PASSWORD_FILE',
+    'printf "%s\\n" "$SERVICE_PASSWORD" > "$PASSWORD_FILE"',
+  ].join("\n"));
+  const overwrittenBySource = scanCurrentShell([
+    'PASSWORD_FILE=/tmp/privacy-output',
+    '. "$CONFIG_FILE"',
+    'printf "%s\\n" "$SERVICE_PASSWORD" > "$PASSWORD_FILE"',
+  ].join("\n"));
+
+  assert.doesNotMatch(redirected.output, /shell-secret-variable-output/);
+  for (const result of [visible, stderr, stdoutAlias, extraFileDescriptor, stderrOnly, unknownTarget]) {
+    assert.match(result.output, /shell-secret-variable-output fixture\.sh:2 category=unsafe-logging/);
+  }
+  assert.match(dynamicStdout.output, /shell-secret-variable-output fixture\.sh:3 category=unsafe-logging/);
+  assert.match(conditionalTarget.output, /shell-secret-variable-output fixture\.sh:6 category=unsafe-logging/);
+  assert.match(overwrittenByRead.output, /shell-secret-variable-output fixture\.sh:4 category=unsafe-logging/);
+  assert.match(overwrittenBySource.output, /shell-secret-variable-output fixture\.sh:4 category=unsafe-logging/);
+});
+
+test("current scan honors only clear enclosing shell block redirects", () => {
+  const command = '  printf "%s\\n" "$SERVICE_PASSWORD"';
+  const redirected = scanCurrentShell(['AUTH_CONFIG_FILE="/tmp/privacy-auth-config"', '{', command, '} > "$AUTH_CONFIG_FILE"'].join("\n"));
+  const visible = scanCurrentShell(['{', command, '}'].join("\n"));
+  const stdoutAlias = scanCurrentShell(['{', command, '} > /dev/stdout'].join("\n"));
+  const innerStderr = scanCurrentShell(['{', `${command} >&2`, '} > "$AUTH_CONFIG_FILE"'].join("\n"));
+
+  assert.doesNotMatch(redirected.output, /shell-secret-variable-output/);
+  for (const result of [visible, stdoutAlias, innerStderr]) {
+    assert.match(result.output, /shell-secret-variable-output fixture\.sh:3 category=unsafe-logging/);
+  }
+});
+
+test("current scan keeps synthetic test credential literals visible pending a narrow policy", () => {
+  const key = credentialKey("SERVICE", "PASSWORD");
+  const synthetic = scanCurrentLine(quotedCredentialLine([key], ["TEST", "ONLY", "fixture"].join("_")));
+  const realLike = scanCurrentLine(quotedCredentialLine([key], ["unreviewed", "credential"].join("-")));
+
+  assert.match(synthetic.output, /literal-credential-assignment fixture\.sh:1 category=credential/);
+  assert.match(realLike.output, /literal-credential-assignment fixture\.sh:1 category=credential/);
+});
+
+test("current scan does not mistake shell fallback expansion for an assignment", () => {
+  const fallback = ["${", credentialKey("SERVICE", "PASSWORD"), ":-", "TEST_ONLY", "}"].join("");
+  const assignment = ["${", credentialKey("SERVICE", "PASSWORD"), ":=", "unreviewed-credential", "}"].join("");
+  const comparison = scanCurrentShell(`grep -Fxq "user = ${fallback}" "$CONFIG_FILE"`);
+  const assigningExpansion = scanCurrentShell(`grep -Fxq "user = ${assignment}" "$CONFIG_FILE"`);
+  const directAssignment = scanCurrentShell(quotedCredentialLine(["SERVICE", "PASSWORD"], "unreviewed-credential"));
+
+  assert.doesNotMatch(comparison.output, /literal-credential-assignment/);
+  assert.match(assigningExpansion.output, /literal-credential-assignment fixture\.sh:2 category=credential/);
+  assert.match(directAssignment.output, /literal-credential-assignment fixture\.sh:2 category=credential/);
+});
 
 const runtimeEnvironmentDumpFindings = [
   {

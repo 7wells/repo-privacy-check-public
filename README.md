@@ -95,6 +95,8 @@ The scanner focuses on high-confidence privacy and secret risks:
 
 Unsafe-logging rules apply to executable and configuration content in the current tree. History scans retain rules for persistent secrets, credentials, private paths, and private URLs without forcing rewrites for obsolete behavioral patterns.
 
+The shell output rules distinguish clear file redirects from output that can reach stdout or stderr. They keep ambiguous redirects as findings; a file redirect alone does not establish that its destination is safe. Synthetic credential literals in tests remain findings because test paths and apparent dummy values are not general exemptions. History attestations apply only to exact historical findings and do not suppress current findings.
+
 In Git repositories, current mode scans tracked files plus untracked files that are not excluded by standard Git ignore rules. Tracked files remain in scope even when a later ignore rule matches their path. Non-Git directories retain the regular filesystem walk. Use `include-ignored` only for deliberate audits of local generated or ignored content.
 
 Run `node scripts/privacy-check.js --mode index .` locally before committing to check the staged snapshot. Index mode reads staged paths and Git objects, including explicitly staged ignored files; it does not read unstaged working-tree changes, untracked files, or `git add -N` placeholders. It requires a Git worktree root and a resolved index, and works before the first commit. Use current mode as well when reviewing unstaged changes. The reusable workflow keeps current and history scans: a hosted checkout cannot see a developer's local staging area.
