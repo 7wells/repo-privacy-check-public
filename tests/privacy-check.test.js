@@ -87,11 +87,13 @@ test("action metadata avoids unquoted colon-space values", () => {
 
 test("reusable workflow invokes the reviewed public action without a second Git checkout", () => {
   const workflow = fs.readFileSync(path.resolve(__dirname, "../.github/workflows/privacy-check.yml"), "utf8");
-  const reviewedScannerSha = "f3514d82fb35608e88734037fad115ad03ee9dc4";
+  const reviewedScannerSha = "c7afdb143cf1931280f39e2e7b01c17f0c2c15da";
   const checkoutUses = workflow.match(/^\s*uses:\s+actions\/checkout@/gm) ?? [];
+  const runtimeUses = workflow.match(/^\s*uses:\s+7wells\/repo-privacy-check-public@[0-9a-f]{40}\b/gm) ?? [];
 
   assert.equal(checkoutUses.length, 1);
-  assert.match(workflow, new RegExp(`uses: 7wells/repo-privacy-check-public@${reviewedScannerSha}\\b`));
+  assert.equal(runtimeUses.length, 2);
+  assert.ok(runtimeUses.every((use) => use.includes(`@${reviewedScannerSha}`)));
   assert.doesNotMatch(workflow, /^\s*repository:\s*/m);
   assert.doesNotMatch(workflow, /^\s*uses:\s+\.\/privacy-check-action\s*$/m);
 });
