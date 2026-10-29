@@ -9,7 +9,7 @@ const path = require("node:path");
 const { test } = require("node:test");
 
 const workflowPath = path.resolve(__dirname, "../.github/workflows/privacy-check.yml");
-const scannerSha = "c7afdb143cf1931280f39e2e7b01c17f0c2c15da";
+const scannerSha = "e04bd164afb6b9dfe4f55c4bd71608d38cb4fa75";
 
 test("reusable workflow uses the reviewed HEAD-scoped implementation for both active scans", () => {
   const workflow = fs.readFileSync(workflowPath, "utf8");
