@@ -414,7 +414,10 @@ function matchesPrivateNetworkUrl(line) {
 
   for (const match of line.matchAll(urlPattern)) {
     try {
-      if (isPrivateNetworkHostname(new URL(match[0]).hostname)) {
+      const hostname = new URL(match[0]).hostname;
+      // URL canonicalizes numeric IPv4 hosts and brackets IPv6 hosts. Only
+      // this rule exempts them; credentials, queries, and path redaction remain independent.
+      if (!parseIpv4Address(hostname) && !hostname.startsWith("[") && isPrivateNetworkHostname(hostname)) {
         return true;
       }
     } catch {

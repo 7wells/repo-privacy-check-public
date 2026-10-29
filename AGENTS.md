@@ -30,6 +30,7 @@ This repository contains a GitHub Action that audits repositories for high-confi
 - History traversal should avoid rescanning unchanged blob/path pairs across commits so full-history checks remain practical for repositories with substantial history.
 - Full `HEAD`-history scans are valid for deliberate audits and for this action repository's self-check workflow; unrelated refs are outside a single invocation's scope.
 - Prefer high-confidence rules over broad speculative matches.
+- The `private-network-url` rule exempts numeric IPv4/IPv6 URL hosts only. Internal hostnames remain in scope; credentials, sensitive queries, other sensitive URL content, the shared network classifier, and finding-path redaction retain their independent protections.
 - Keep rule additions generic and reusable across private and public repositories.
 
 ## Required Checks

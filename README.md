@@ -86,7 +86,7 @@ The scanner focuses on high-confidence privacy and secret risks:
 - Common GitHub, Slack, AWS, npm, PyPI, GitLab, Google, Stripe, and SendGrid token shapes.
 - Literal credential assignments, bearer credentials, and credential-bearing URLs.
 - Local credential files, Git identity values, and literal Git identity commands.
-- Home-directory paths, private-network URLs, and URLs with query strings.
+- Home-directory paths, URLs with internal hostnames, and URLs with sensitive query values.
 - Local-looking `DEV_ENV_*` assignments. The exact generic WSL drive source
   root `/mnt/<drive-letter>/src` is allowed, but paths below or merely prefixed
   by that root remain findings.
@@ -94,6 +94,8 @@ The scanner focuses on high-confidence privacy and secret risks:
 - `.log` files are scanned for sensitive content; the extension alone is not blocked.
 
 Unsafe-logging rules apply to executable and configuration content in the current tree. History scans retain rules for persistent secrets, credentials, private paths, and private URLs without forcing rewrites for obsolete behavioral patterns.
+
+The `private-network-url` rule flags internal hostnames, but a numeric IPv4 or IPv6 URL host alone does not produce a finding, including private network addresses. This exception applies only to the numeric host itself: embedded credentials, sensitive query values, and other sensitive URL content remain subject to the existing content rules in current, index, and history modes. Private network identities in finding paths remain redacted. Opaque access values in URL path segments are not generally recognized unless they match an existing token or other content rule; do not assume that an allowed URL path is safe to publish.
 
 The shell output rules distinguish clear file redirects from output that can reach stdout or stderr. They keep ambiguous redirects as findings; a file redirect alone does not establish that its destination is safe. Synthetic credential literals in tests remain findings because test paths and apparent dummy values are not general exemptions. History attestations apply only to exact historical findings and do not suppress current findings.
 

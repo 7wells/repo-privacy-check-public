@@ -398,7 +398,7 @@ for (const { name, line } of similarCredentialKeyLines) {
 
 test("detects private network URLs and literal Git identities", () => {
   const target = makeTempRepo();
-  const privateUrl = ["http:/", "192.168.10.20", "status"].join("/");
+  const privateUrl = ["http:/", "service.internal", "status"].join("/");
   const gitIdentity = ["git", "config", "--global", "user.email", "private-user@example.invalid"].join(" ");
 
   fs.writeFileSync(path.join(target, "local-config.txt"), `${privateUrl}\n${gitIdentity}\n`);
@@ -479,21 +479,10 @@ test("allows loopback and localhost URLs", () => {
   assert.equal(result.status, 0);
 });
 
-test("detects RFC1918, ULA, link-local, and local-domain URLs", () => {
+test("detects local-domain URLs", () => {
   const target = makeTempRepo();
   const url = (host) => ["http:/", host, "status"].join("/");
   const urls = [
-    url("10.0.0.1"),
-    url("172.16.0.1"),
-    url("172.31.255.254"),
-    url("192.168.1.1"),
-    url("169.254.0.0"),
-    url("169.254.255.255"),
-    url("[::ffff:192.168.1.1]"),
-    url("[fc00::1]"),
-    url("[fdff:ffff::1]"),
-    url("[fe80::1]"),
-    url("[febf::1]"),
     url("service.internal"),
     url("host.lan"),
     url("device.local"),
