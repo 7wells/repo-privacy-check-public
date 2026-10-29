@@ -29,7 +29,7 @@ jobs:
       - name: Scan current tree
         id: current-scan
         continue-on-error: true
-        uses: 7wells/repo-privacy-check-public@e04bd164afb6b9dfe4f55c4bd71608d38cb4fa75 # reviewed scanner runtime
+        uses: 7wells/repo-privacy-check-public@e6f19e315d056706af4a5450d94919d7a09f0d7d # reviewed scanner runtime
         with:
           target-path: target
           scan-mode: current
@@ -38,7 +38,7 @@ jobs:
         id: history-scan
         if: always()
         continue-on-error: true
-        uses: 7wells/repo-privacy-check-public@e04bd164afb6b9dfe4f55c4bd71608d38cb4fa75 # reviewed scanner runtime
+        uses: 7wells/repo-privacy-check-public@e6f19e315d056706af4a5450d94919d7a09f0d7d # reviewed scanner runtime
         with:
           target-path: target
           scan-mode: history
