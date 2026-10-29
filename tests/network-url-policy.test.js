@@ -134,7 +134,7 @@ for (const mode of ["current", "index", "history"]) {
       });
     }
   }
-  for (const context of ["token", "api_key", "password", "access", "%74oken"]) {
+  for (const context of ["token", "api_key", "password", "access", "%74oken", "token%2Fopaque", "token%5Copaque"]) {
     test(`${mode} independently redacts opaque value under ${context}`, () => {
       const value = ["synthetic", "opaque-value"].join("-");
       scanFixture(mode, "Harmless text.", (result) => {

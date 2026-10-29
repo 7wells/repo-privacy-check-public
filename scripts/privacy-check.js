@@ -974,7 +974,7 @@ function normalizeGitPath(filePath) {
 
 function sanitizeFindingPath(filePath) {
   const normalized = normalizeGitPath(filePath);
-  const decodedSegments = decodePathSegments(normalized);
+  const decodedSegments = normalizeGitPath(decodePathSegments(normalized).join("/")).split("/").filter(Boolean);
   const decodedPath = decodedSegments.join("/");
   // Output redaction is deliberately broader than blocking detection: a directory
   // labelled as credentials may contain an opaque value with no known token shape.
