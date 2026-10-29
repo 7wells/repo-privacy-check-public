@@ -438,6 +438,33 @@ function isIndirectUrlCredentialValue(value) {
   return placeholderValuePattern.test(decodedValue) || indirectCredentialValuePattern.test(decodedValue);
 }
 
+// Decode each segment once; malformed escapes stay literal, without recursive decoding.
+function decodePathSegments(value) {
+  return value.split("/").map((segment) => {
+    try { return decodeURIComponent(segment); } catch { return segment; }
+  });
+}
+
+function urlPathSegments(line) {
+  const segments = [];
+  for (const match of line.matchAll(/\bhttps?:\/\/[^\s"'<>`]+/gi)) {
+    try { segments.push(...decodePathSegments(new URL(match[0]).pathname)); } catch {
+      // Preserve existing handling of malformed URL-like text.
+    }
+  }
+  return segments;
+}
+
+function matchesPathCredentialAssignment(segment) {
+  const match = /^([A-Za-z][A-Za-z0-9_]*)=(.+)$/.exec(segment);
+  // A URL segment is a literal, not a code identifier or function call.
+  return Boolean(match && matchesLiteralCredentialAssignment(`${match[1]}=${JSON.stringify(match[2])}`));
+}
+
+function isKnownTokenRule(rule) {
+  return ["token", "cloud-credential", "payment-credential"].includes(rule.category) && rule.pattern;
+}
+
 function matchesCredentialUrl(line) {
   const urlPattern = /\b(?:https?|postgresql):\/\/([^\s:@/"'<>`]+):([^\s@/"'<>`]+)@[^\s/"'<>`]+/gi;
 
@@ -947,6 +974,17 @@ function normalizeGitPath(filePath) {
 
 function sanitizeFindingPath(filePath) {
   const normalized = normalizeGitPath(filePath);
+  const decodedSegments = decodePathSegments(normalized);
+  const decodedPath = decodedSegments.join("/");
+  // Output redaction is deliberately broader than blocking detection: a directory
+  // labelled as credentials may contain an opaque value with no known token shape.
+  if (decodedSegments.some((segment, index) =>
+    matchesPathCredentialAssignment(segment) ||
+    ((literalCredentialKeyPattern.test(segment) || /^(?:access|auth|bearer)$/i.test(segment)) &&
+      decodedSegments[index + 1])
+  ) || contentRules.some((rule) => isKnownTokenRule(rule) && rule.pattern.test(decodedPath))) {
+    return "[redacted-path]";
+  }
 
   const containsControlCharacters = /[\u0000-\u001f\u007f]/.test(normalized);
   const containsEmailAddress = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i.test(normalized);
@@ -1113,6 +1151,7 @@ function checkContentRules(findings, relativePath, content, source) {
   let isGitUserSection = false;
 
   for (let index = 0; index < lines.length; index += 1) {
+    const pathSegments = urlPathSegments(lines[index]);
     if (isGitConfigFile) {
       const section = /^\s*\[([^\]]+)\]\s*(?:[#;].*)?$/.exec(lines[index]);
       if (section) {
@@ -1131,7 +1170,9 @@ function checkContentRules(findings, relativePath, content, source) {
         continue;
       }
 
-      if (rule.pattern?.test(lines[index]) || rule.matches?.(lines[index], {
+      if ((isKnownTokenRule(rule) && pathSegments.some((segment) => rule.pattern.test(segment))) ||
+        (rule.ruleId === "literal-credential-assignment" && pathSegments.some(matchesPathCredentialAssignment)) ||
+        rule.pattern?.test(lines[index]) || rule.matches?.(lines[index], {
         stdoutRedirectedByGroup: redirectedShellLines.has(index),
         stdoutRedirectState: redirectStates[index],
       })) {

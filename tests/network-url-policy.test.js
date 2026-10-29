@@ -11,15 +11,16 @@ const path = require("node:path");
 const { test } = require("node:test");
 const { runCli, testInternals } = require("../scripts/privacy-check.js");
 
-function scanFixture(mode, content, check) {
+function scanFixture(mode, content, check, file = "fixture.txt") {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "privacy-url-policy-"));
   try {
     const target = path.join(root, "repo");
     fs.mkdirSync(target);
     const git = (...args) => execFileSync("git", args, { cwd: target, stdio: "ignore" });
     git("init", "--quiet");
-    fs.writeFileSync(path.join(target, "fixture.txt"), `${content}\n`);
-    git("add", "fixture.txt");
+    fs.mkdirSync(path.dirname(path.join(target, file)), { recursive: true });
+    fs.writeFileSync(path.join(target, file), `${content}\n`);
+    git("add", file);
     git("-c", "user.name=Example User", "-c", "user.email=example@example.invalid",
       "commit", "--quiet", "-m", "Add synthetic URL fixture");
     const reportPath = path.join(root, "report.json");
@@ -104,4 +105,62 @@ for (const host of ["10.0.0.1", "172.16.0.1", "192.168.1.1", "fd00::1", "service
   test(`path redaction still protects ${host}`, () => {
     assert.equal(testInternals.sanitizeFindingPath(`fixtures/${host}/sample.txt`), "[redacted-path]");
   });
+}
+
+for (const mode of ["current", "index", "history"]) {
+  for (const host of ["example.org", "10.0.0.1", "[fd00::1]"]) {
+    for (const key of ["token", "api_key", "password"]) {
+      test(`${mode} detects ${key} path assignment on ${host}`, () => {
+        checkFinding(mode, ["https://", host, "/", key, "=", "s3cr3t"].join(""),
+          "literal-credential-assignment", "credential", ["s3cr3t"]);
+      });
+    }
+    test(`${mode} detects once-encoded token on ${host}`, () => {
+      const token = ["%67", "hp_", "A".repeat(36)].join("");
+      checkFinding(mode, ["https://", host, "/access/", token].join(""), "github-token", "token", [token]);
+    });
+    test(`${mode} detects encoded credential assignment on ${host}`, () => {
+      checkFinding(mode, ["https://", host, "/%74oken%3D", "s3cr3t"].join(""),
+        "literal-credential-assignment", "credential", ["s3cr3t"]);
+    });
+    for (const suffix of ["resources/12345", "objects/" + "abcdef12".repeat(8),
+      "resources/550e8400-e29b-41d4-a716-446655440000", "token=$TOKEN", "password=${PASSWORD}",
+      "api_key=placeholder", "token=%24TOKEN", "token=", "resources/%ZZ"]) {
+      test(`${mode} allows non-sensitive path ${suffix} on ${host}`, () => {
+        scanFixture(mode, ["https://", host, "/", suffix].join(""), (result) => {
+          assert.equal(result.status, 0, result.output);
+          assert.deepEqual(result.report.findings, []);
+        });
+      });
+    }
+  }
+  for (const context of ["token", "api_key", "password", "access", "%74oken"]) {
+    test(`${mode} independently redacts opaque value under ${context}`, () => {
+      const value = ["synthetic", "opaque-value"].join("-");
+      scanFixture(mode, "Harmless text.", (result) => {
+        assert.equal(result.status, 1);
+        assert.equal(result.report.findings[0].ruleId, "blocked-private-key-extension");
+        assert.equal(result.report.findings[0].file, "[redacted-path]");
+        assert.equal(result.output.includes(value), false);
+        assert.equal(result.reportText.includes(value), false);
+      }, `fixtures/${context}/${value}/fixture.key`);
+    });
+  }
+  test(`${mode} keeps an ordinary finding path usable`, () => {
+    scanFixture(mode, "Harmless text.", (result) => {
+      assert.equal(result.status, 1);
+      assert.equal(result.report.findings[0].file, "resources/12345/fixture.key");
+      assert.match(result.output, /resources\/12345\/fixture\.key/);
+    }, "resources/12345/fixture.key");
+  });
+  for (const prefix of ["token=", "%74oken%3D", ""]) {
+    test(`${mode} redacts sensitive encoded filename with prefix ${prefix}`, () => {
+      const value = prefix ? "synthetic-value" : ["%67", "hp_", "A".repeat(36)].join("");
+      scanFixture(mode, "Harmless text.", (result) => {
+        assert.equal(result.report.findings[0].file, "[redacted-path]");
+        assert.equal(result.output.includes(value), false);
+        assert.equal(result.reportText.includes(value), false);
+      }, `fixtures/${prefix}${value}/fixture.key`);
+    });
+  }
 }
