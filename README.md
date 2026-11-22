@@ -1,7 +1,6 @@
 # Repo Privacy Check
-Reusable GitHub Action and workflow for detecting accidentally committed private data, credentials, host-specific configuration, and selected supply-chain indicators.
-[![Privacy Check](https://github.com/7wells/repo-privacy-check-public/actions/workflows/privacy-check.yml/badge.svg?branch=main)](https://github.com/7wells/repo-privacy-check-public/actions/workflows/privacy-check.yml)
 
+Reusable GitHub Action and workflow for detecting accidentally committed private data, credentials, host-specific configuration, and selected supply-chain indicators.
 
 ## Use the action
 
